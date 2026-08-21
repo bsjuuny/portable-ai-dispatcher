@@ -1,4 +1,5 @@
 import type { ProviderId } from './provider.js';
+import type { TaskClassification } from './classification.js';
 
 export type DispatcherCommand = 'ask' | 'analyze' | 'review' | 'fix' | 'implement';
 
@@ -52,6 +53,7 @@ export interface DispatcherTask {
   workingDirectory: string;
   timeoutMs?: number;
   metadata?: Record<string, unknown>;
+  classification?: TaskClassification;
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;
