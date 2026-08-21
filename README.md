@@ -43,14 +43,17 @@ Requires Node.js 22+. Requires the [`claude`](https://claude.com/product/claude-
 node dist/cli.js doctor
 ```
 
-Or make `ai-dispatcher` available as a real command on PATH via `pnpm link --global`. If pnpm has never been set up on this machine before, that command fails with `The configured global bin directory "..." is not in PATH` — fix it once, then **open a brand new terminal window** (verified live: env var changes from `pnpm setup` are written to the Windows registry and are not picked up by any shell/tool session that was already running, only by ones started afterward):
+Or make `ai-dispatcher` available as a real command on PATH:
 
 ```bash
-pnpm setup              # one-time, only if `pnpm link --global` complains about PATH
-# → close this terminal and open a new one, then:
-pnpm link --global      # from this project's directory
-ai-dispatcher doctor    # now works in any new shell
+pnpm link --global .   # from this project's directory - note the trailing `.`
+ai-dispatcher doctor   # now works in any new shell
 ```
+
+Two things this can hit on a machine where pnpm's global linking has never been used before (both verified live, in that order, on Windows):
+
+1. **`The configured global bin directory "..." is not in PATH`** — run `pnpm setup` once, then **open a brand new terminal window** (not just a new tab in an already-running terminal host, and not a shell restarted by a tool - env var changes from `pnpm setup` are written to the Windows registry and are only picked up by processes launched fresh afterward).
+2. **`Aborted removal of modules directory due to no TTY`** — `pnpm link --global` needs to reinstall `node_modules` into a layout suited for global linking, and pnpm wants interactive confirmation for that. Run `CI=true pnpm link --global .` once to answer non-interactively (safe: it just reinstalls the same lockfile-pinned dependencies, nothing is downgraded or changed). If a *later* `pnpm build`/`pnpm test` starts hitting the same "no TTY" error even without `--global`, that reinstall left `node_modules` in a state pnpm's own dependency-drift check doesn't like — one clean `CI=true pnpm install` resettles it, and normal commands go back to working without `CI=true` afterward.
 
 The rest of this README uses `ai-dispatcher <command>` as shorthand for whichever of the two you're using — substitute `node dist/cli.js` if you haven't linked it globally. To undo the global link: `pnpm unlink --global` (run from this project's directory).
 
