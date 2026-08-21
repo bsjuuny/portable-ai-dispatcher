@@ -35,6 +35,10 @@ export default [
       // references more accurately than this JS-level rule, which false-positives on
       // ambient type namespaces like `NodeJS.ProcessEnv` used in type position.
       'no-undef': 'off',
+      // Same reasoning as no-undef: the base rule doesn't understand that a `type`
+      // and a `const`/`function` with the same name live in separate TS namespaces
+      // (used deliberately in src/history/db.ts). tsc already catches real redeclare bugs.
+      'no-redeclare': 'off',
       'no-console': 'error',
       'no-restricted-imports': noSpawnImports,
     },
@@ -77,6 +81,12 @@ export default [
       'no-restricted-imports': 'off',
       'no-console': 'off',
     },
+  },
+  {
+    // Plain-JS fixture scripts (no TS project, no execa restriction - these are
+    // throwaway test helpers, not part of the dispatcher itself).
+    files: ['tests/fixtures/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node } },
   },
   prettierConfig,
 ];
