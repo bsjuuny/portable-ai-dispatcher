@@ -94,6 +94,7 @@ Every dispatch command accepts:
 | `--provider <id>` | Force `claude` or `codex` instead of routing |
 | `--dry-run` | Print the routing decision and built command, execute nothing |
 | `--json` | Machine-readable output |
+| `--debug` | Raise the application log to debug level (NDJSON to stdout) |
 
 ### Writing a Task Specification
 
@@ -177,13 +178,37 @@ Disagreement between what a reviewer says and what validation shows is resolved 
 
 ## Audit and history
 
-Every task gets a `taskId`; every execution attempt (including retries and fallbacks) gets its own `executionId`, all linked to the same task. Structured audit events (`task.created`, `provider.selected`, `retry.started`, `validation.failed`, `review.completed`, ...) are appended (never rewritten) to a local SQLite database.
+Every task gets a `taskId`; every execution attempt (including retries and fallbacks) gets its own `executionId`, all linked to the same task. Structured audit events (`task.created`, `provider.selected`, `retry.started`, `validation.failed`, `review.completed`, ...) are appended (never rewritten) to a local SQLite database at `.dispatcher/history.sqlite` in the project you ran `ai-dispatcher` against.
 
 **By default, prompt and response text are never stored** — only their SHA-256 hash and length. Set `diagnostics.logPrompts: true` in config to opt into storing raw text, and even then it passes through secret scrubbing first (AWS/OpenAI/Anthropic/GitHub-token-shaped strings, JWTs, PEM blocks, `.env`-style secret lines are replaced with `[REDACTED]`).
 
+`ai-dispatcher history [--limit N]` lists recent tasks; `ai-dispatcher inspect <taskId>` shows one task plus every execution attempt made for it (provider, timing, token/cost usage); `ai-dispatcher explain <taskId>` shows the routing score breakdown that led to the provider that was picked (see [Routing](#routing) above).
+
+### Failure artifacts
+
+When an execution attempt fails, times out, or errors out of the process/parsing layer entirely, the full detail is written to `.dispatcher/runs/<executionId>/` in the project directory:
+
+```
+.dispatcher/runs/<executionId>/
+├─ metadata.json   # provider, command, args, cwd, exit code, timing
+├─ error.json      # the DispatcherError (code, message) - omitted if there wasn't one
+├─ stdout.log      # raw stdout, secret-scrubbed
+└─ stderr.log      # raw stderr, secret-scrubbed
+```
+
+This is what makes a failure re-diagnosable without re-running anything: `ai-dispatcher inspect <taskId>` tells you *that* an execution failed, the artifact directory tells you *why*, byte-for-byte, without needing `diagnostics.logPrompts: true`. The task prompt itself (`stdinContent`) is deliberately never written here, matching the audit log's default policy. Controlled by `diagnostics.saveFailureArtifacts` (default `true`); a failed `TaskResult.rawOutputPath` points at the directory when one was written. A successful execution never writes anything here.
+
+### What lives under `.dispatcher/`
+
+Running `ai-dispatcher` against a project creates a `.dispatcher/` directory inside it: `history.sqlite` (above), `runs/<executionId>/` (failure artifacts, above), and `project/memory.json` (see [Project memory](#project-memory) below). None of this is meant to be committed — add `.dispatcher/` to that project's `.gitignore` (this repository's own `.gitignore` already does this for the dispatcher's own self-tests and dogfooding runs, but a *project you point the dispatcher at* needs its own entry).
+
+### Project memory
+
+`project/memory.ts` stores short decision/summary snippets (never full source) in `.dispatcher/project/memory.json`, ranked by recency + keyword overlap against the current task (no embeddings — see Known Limitations) and surfaced to providers via the context builder. **In v1.0, nothing in the dispatch pipeline calls `remember()` yet** — the read path (`relevantTo()`) is wired into every task's context, but nothing automatically writes a memory entry after a task completes. The class is usable programmatically (see its tests), but out of the box the memory file stays empty unless something external populates it. This is an honest gap, not a hidden one — closing it means deciding *what* about a completed task is worth remembering, which wasn't settled during v1.0 implementation.
+
 ## Config
 
-`.ai-dispatcher.yml` in the project root, all fields optional (see `src/config/schema.ts` for the full shape and defaults):
+`.ai-dispatcher.yml` (or `.ai-dispatcher.yaml` — `.yml` wins if both exist) in the project root, all fields optional (see `src/config/schema.ts` for the full shape and defaults):
 
 ```yaml
 execution:
@@ -221,8 +246,10 @@ node dist/cli.js doctor
 ## Known Limitations
 
 - **Circuit breaker state is per-process, in-memory only.** Each CLI invocation is short-lived, so a circuit opened in one invocation is not visible to the next. Cross-invocation persistence (e.g. via the SQLite history) is out of scope for v1.0.
-- **Project memory has no embeddings/vector search.** Relevance ranking is recency + keyword overlap only (`project/memory.ts`). This is a deliberate simplicity choice for v1.0, not an oversight.
+- **Project memory has no embeddings/vector search, and nothing writes to it yet.** Relevance ranking is recency + keyword overlap only, and the read path is fully wired into every task's context — but no automatic `remember()` call exists in the dispatch pipeline in v1.0, so the memory file stays empty unless populated externally. See [Project memory](#project-memory) above.
+- **The application log (`logging/logger.ts`, pino) is minimally wired.** `--debug` correctly raises its level and `cli/commands/dispatch.ts` emits two lifecycle events (task built, orchestrator outcome), but most of the pipeline (routing, validation, review, retry/fallback) does not yet log through it — the audit trail (SQLite) and failure artifacts are the actually-complete structured records right now, not this log.
 - **Codex's success-path JSONL event shape is not fully verified against live output.** During implementation, the configured OpenAI/ChatGPT account hit its usage limit before a successful `codex exec --json` run could be captured (see `docs/fixtures/raw-probes/codex-stderr.log`). The error-path events (`thread.started`, `turn.started`, `error`, `turn.failed`) *were* verified live and are strictly validated; the final response text is instead read from Codex's `--output-last-message` file (a separate, independently-documented flag) rather than parsed from a guessed success-path JSONL shape, so this doesn't block correct operation — but the zod schema for other success-path event types is intentionally loose (passthrough) pending a real captured sample.
 - **CLI command-layer files (`cli/commands/*.ts`, `cli/bootstrap.ts`) have no automated test coverage**, though every command was manually verified end-to-end against the real installed CLIs during implementation (`doctor`, `providers`, `--dry-run` routing, a real `ask` dispatch, `history`, `usage` were all run and their output inspected). Formal vitest coverage for this thin wiring layer was deprioritized under time constraints in favor of the core engine (routing, validation, review, security). See the final implementation report for exact coverage numbers per module.
 - **`node:sqlite` is Node's "Experimental" API tier** (not yet stable). All access is isolated behind `history/db.ts` + `history/repository.ts`, so swapping to `better-sqlite3` later (e.g. if a target environment has no admin rights and no prebuilt binary available, mirroring the exact constraint this implementation hit) is a two-file change.
 - **No coverage threshold gate in CI/`pnpm test:coverage`.** This is deliberate: a hard-failing threshold creates an incentive to weaken assertions or skip tests to hit a number, which is explicitly the wrong tradeoff here. Real per-module percentages are reported instead.
+- **`ProviderHealth.reachable` is not an independent network probe.** `doctor`'s output has separate `installed`/`authenticated`/`reachable`/`ready` fields (so a restricted-network deployment can in principle distinguish "CLI present, never logged in" from "logged in, but currently unreachable"), but in the current health-check implementations `reachable` is simply derived from `authenticated` (`true` if authenticated, `null` otherwise) rather than from a real independent connectivity check — no unnecessary external ping is made, but the field doesn't yet carry more signal than `authenticated` does.
