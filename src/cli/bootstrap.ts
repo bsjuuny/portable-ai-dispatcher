@@ -19,14 +19,16 @@ export interface AppContext {
 }
 
 /** Composition root for the CLI - the only other place besides providers/index.ts that wires concrete implementations together. */
-export function createAppContext(cwd: string): AppContext {
+export function createAppContext(cwd: string, opts: { debug?: boolean } = {}): AppContext {
   const config = loadConfig(cwd);
   const providers = createDefaultProviderRegistry();
   const db = openDatabase(defaultHistoryDbPath(cwd));
   const history = new HistoryRepository(db);
   const audit = new AuditLogger(history, { storeRawContent: config.diagnostics.logPrompts });
   const orchestrator = new Orchestrator({ providers, usageStore: history, auditLogger: audit, config });
-  const logger = createLogger({ level: process.env['AI_DISPATCHER_LOG_LEVEL'] as pino.LevelWithSilent | undefined });
+  // --debug overrides AI_DISPATCHER_LOG_LEVEL, which overrides the 'info' default.
+  const level = opts.debug ? 'debug' : (process.env['AI_DISPATCHER_LOG_LEVEL'] as pino.LevelWithSilent | undefined);
+  const logger = createLogger({ level });
 
   return { cwd, config, providers, history, audit, orchestrator, logger };
 }

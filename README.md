@@ -34,6 +34,26 @@ pnpm build
 
 Requires Node.js 22+. Requires the [`claude`](https://claude.com/product/claude-code) and/or [`codex`](https://github.com/openai/codex) CLIs to be installed and authenticated separately — see below.
 
+### Running the CLI
+
+`pnpm build` produces `dist/cli.js` — it is **not** automatically put on your PATH as a bare `ai-dispatcher` command. Pick one:
+
+```bash
+# Always works, no setup - run it directly:
+node dist/cli.js doctor
+```
+
+Or make `ai-dispatcher` available as a real command on PATH via `pnpm link --global`. If pnpm has never been set up on this machine before, that command fails with `The configured global bin directory "..." is not in PATH` — fix it once, then **open a brand new terminal window** (verified live: env var changes from `pnpm setup` are written to the Windows registry and are not picked up by any shell/tool session that was already running, only by ones started afterward):
+
+```bash
+pnpm setup              # one-time, only if `pnpm link --global` complains about PATH
+# → close this terminal and open a new one, then:
+pnpm link --global      # from this project's directory
+ai-dispatcher doctor    # now works in any new shell
+```
+
+The rest of this README uses `ai-dispatcher <command>` as shorthand for whichever of the two you're using — substitute `node dist/cli.js` if you haven't linked it globally. To undo the global link: `pnpm unlink --global` (run from this project's directory).
+
 ## Provider authentication
 
 **The dispatcher is not a credential manager.** It never reads, stores, or touches an API key, OAuth token, or session cookie. It only shells out to the official CLIs' own health/status commands (`claude auth status`, `codex login status`) to check whether *you* are already logged in.

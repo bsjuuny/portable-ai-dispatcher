@@ -16,10 +16,12 @@ export async function runDispatchCommand(
   options: DispatchCommandOptions,
 ): Promise<number> {
   const task = await buildTaskFromCli(command, descriptionArg, options);
+  ctx.logger.debug({ event: 'cli.task.built', taskId: task.id, command }, 'Task built from CLI input');
   ctx.history.recordTaskCreated(task);
 
   const forcedProvider = options.provider as ProviderId | undefined;
   const outcome = await ctx.orchestrator.runTask(task, { forcedProvider, dryRun: options.dryRun });
+  ctx.logger.debug({ event: 'cli.task.outcome', taskId: task.id, verdict: outcome.verdict }, 'Orchestrator returned');
 
   ctx.history.updateTaskStatus(task.id, task.status, { endedAt: new Date().toISOString() });
   if (outcome.validation) ctx.history.recordValidationOutcome(task.id, outcome.validation.passed);

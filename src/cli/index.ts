@@ -25,7 +25,7 @@ function addCommonOptions(cmd: Command): Command {
 
 for (const command of ['ask', 'analyze', 'review', 'fix', 'implement'] as const) {
   addCommonOptions(program.command(`${command} [description]`)).action(async (description: string | undefined, options) => {
-    const ctx = createAppContext(process.cwd());
+    const ctx = createAppContext(process.cwd(), { debug: Boolean(options.debug) });
     try {
       const code = await runDispatchCommand(ctx, command, description, options);
       process.exitCode = code;

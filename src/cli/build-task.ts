@@ -13,6 +13,7 @@ export interface CommonCliOptions {
   timeout?: string;
   provider?: string;
   dryRun?: boolean;
+  debug?: boolean;
 }
 
 /**
