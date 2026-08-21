@@ -124,11 +124,17 @@ export class Orchestrator {
         const startedAt = new Date().toISOString();
 
         try {
-          const { executionId, result } = await executeOnce(provider, task, context, {
-            sandbox: this.deps.config.execution.sandbox,
-            approval: this.deps.config.execution.approval,
-            timeoutMs: task.timeoutMs ?? this.deps.config.execution.timeoutMs,
-          });
+          const { executionId, result } = await executeOnce(
+            provider,
+            task,
+            context,
+            {
+              sandbox: this.deps.config.execution.sandbox,
+              approval: this.deps.config.execution.approval,
+              timeoutMs: task.timeoutMs ?? this.deps.config.execution.timeoutMs,
+            },
+            { saveFailureArtifacts: this.deps.config.diagnostics.saveFailureArtifacts },
+          );
           attempts.push({ executionId, provider: currentProvider, result });
           lastResult = result;
 
@@ -246,11 +252,17 @@ export class Orchestrator {
         async (failedResult) => {
           const fixContext = { ...context, validationResults: [failedResult] };
           const implementer = this.deps.providers.get(implementerId);
-          const { result } = await executeOnce(implementer, task, fixContext, {
-            sandbox: this.deps.config.execution.sandbox,
-            approval: this.deps.config.execution.approval,
-            timeoutMs: this.deps.config.execution.timeoutMs,
-          });
+          const { result } = await executeOnce(
+            implementer,
+            task,
+            fixContext,
+            {
+              sandbox: this.deps.config.execution.sandbox,
+              approval: this.deps.config.execution.approval,
+              timeoutMs: this.deps.config.execution.timeoutMs,
+            },
+            { saveFailureArtifacts: this.deps.config.diagnostics.saveFailureArtifacts },
+          );
           if (result.status !== 'success' && result.status !== 'success_with_warning') {
             throw new DispatcherError({ code: 'VALIDATION_FAILED', message: 'Fix attempt did not succeed.', taskId: task.id, retryable: false });
           }
@@ -296,11 +308,13 @@ export class Orchestrator {
         cycle,
         dispatchReview: async (promptText) => {
           const reviewTask: DispatcherTask = { ...task, specification: { ...task.specification, rawDescription: promptText } };
-          const { result } = await executeOnce(reviewer, reviewTask, context, {
-            sandbox: 'read-only',
-            approval: 'never',
-            timeoutMs: this.deps.config.execution.timeoutMs,
-          });
+          const { result } = await executeOnce(
+            reviewer,
+            reviewTask,
+            context,
+            { sandbox: 'read-only', approval: 'never', timeoutMs: this.deps.config.execution.timeoutMs },
+            { saveFailureArtifacts: this.deps.config.diagnostics.saveFailureArtifacts },
+          );
           return result;
         },
       });
@@ -314,11 +328,17 @@ export class Orchestrator {
       task.status = transition(task.status, 'fixing', { taskId: task.id });
       const implementer = this.deps.providers.get(implementerId);
       const reviewFixContext = { ...context, reviewResults: [review] };
-      await executeOnce(implementer, task, reviewFixContext, {
-        sandbox: this.deps.config.execution.sandbox,
-        approval: this.deps.config.execution.approval,
-        timeoutMs: this.deps.config.execution.timeoutMs,
-      });
+      await executeOnce(
+        implementer,
+        task,
+        reviewFixContext,
+        {
+          sandbox: this.deps.config.execution.sandbox,
+          approval: this.deps.config.execution.approval,
+          timeoutMs: this.deps.config.execution.timeoutMs,
+        },
+        { saveFailureArtifacts: this.deps.config.diagnostics.saveFailureArtifacts },
+      );
       validation = await runValidation();
       task.status = transition(task.status, 'validating', { taskId: task.id });
       if (!validation.passed) {

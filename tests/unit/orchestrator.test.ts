@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, access, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Orchestrator } from '../../src/core/orchestrator.js';
@@ -46,7 +46,14 @@ class FakeProvider implements AIProvider {
 
   buildCommand(task: DispatcherTask): ProviderCommandPlan {
     this.calls.push(task.command);
-    return { file: this.id, args: [], cwd: task.workingDirectory, timeoutMs: 1000 };
+    // Deliberately NOT `file: this.id` - that would literally spawn the real
+    // `claude`/`codex` binary on PATH (found while adding failure-artifact tests:
+    // parseOutcome() below is fully scripted and ignores the real ProcessOutcome, but
+    // executeOnce() still always calls the real runProcess() in between, so a fake
+    // provider whose buildCommand names a real CLI binary genuinely launches it).
+    // A trivial real Node subprocess keeps executeOnce's actual process-spawn path
+    // exercised without any risk of touching a real provider CLI.
+    return { file: process.execPath, args: ['-e', 'process.exit(0)'], cwd: task.workingDirectory, timeoutMs: 1000 };
   }
 
   parseOutcome(): TaskResult {
@@ -322,5 +329,81 @@ describe('Orchestrator - code-changing commands: validation + review (real temp 
     const outcome = await orchestrator.runTask(buildTask({ command: 'implement', workingDirectory: repo }));
     expect(outcome.verdict).toBe('FAILED_REVIEW');
     expect(outcome.review?.verdict).toBe('request_changes');
+  });
+});
+
+describe('Orchestrator - Failure Artifacts (spec section 74)', () => {
+  let workDir: string;
+
+  beforeEach(async () => {
+    workDir = await mkdtemp(join(tmpdir(), 'ai-dispatcher-artifacts-orch-'));
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  it('writes a failure artifact under .dispatcher/runs/<executionId>/ when saveFailureArtifacts is enabled (default)', async () => {
+    const claude = new FakeProvider('claude', ['analysis'], [failedResult('claude')]);
+    const registry = new ProviderRegistry();
+    registry.register(claude);
+
+    const orchestrator = new Orchestrator({
+      providers: registry,
+      usageStore: new InMemoryUsageStore(),
+      auditLogger: new AuditLogger(new InMemoryAuditSink()),
+      config: parseConfig({ retry: { maxRetries: 0 }, fallback: { enabled: false } }),
+    });
+
+    const outcome = await orchestrator.runTask(buildTask({ command: 'ask', workingDirectory: workDir }));
+    expect(outcome.verdict).toBe('FAILED_PROVIDER');
+
+    const executionId = outcome.attempts[0]!.executionId;
+    const artifactDir = join(workDir, '.dispatcher', 'runs', executionId);
+    await expect(access(artifactDir)).resolves.toBeUndefined();
+
+    const files = await readdir(artifactDir);
+    expect(files).toEqual(expect.arrayContaining(['metadata.json', 'stdout.log', 'stderr.log', 'error.json']));
+
+    const metadata = JSON.parse(await readFile(join(artifactDir, 'metadata.json'), 'utf8'));
+    expect(metadata.taskId).toBe(outcome.task.id);
+    expect(metadata.provider).toBe('claude');
+
+    // The returned TaskResult links to the artifact for discoverability.
+    expect(outcome.attempts[0]!.result.rawOutputPath).toBe(artifactDir);
+  });
+
+  it('writes nothing when saveFailureArtifacts is disabled', async () => {
+    const claude = new FakeProvider('claude', ['analysis'], [failedResult('claude')]);
+    const registry = new ProviderRegistry();
+    registry.register(claude);
+
+    const orchestrator = new Orchestrator({
+      providers: registry,
+      usageStore: new InMemoryUsageStore(),
+      auditLogger: new AuditLogger(new InMemoryAuditSink()),
+      config: parseConfig({ retry: { maxRetries: 0 }, fallback: { enabled: false }, diagnostics: { saveFailureArtifacts: false } }),
+    });
+
+    await orchestrator.runTask(buildTask({ command: 'ask', workingDirectory: workDir }));
+    await expect(access(join(workDir, '.dispatcher', 'runs'))).rejects.toThrow();
+  });
+
+  it('does not write an artifact for a successful execution', async () => {
+    const claude = new FakeProvider('claude', ['analysis'], [successResult('claude')]);
+    const registry = new ProviderRegistry();
+    registry.register(claude);
+
+    const orchestrator = new Orchestrator({
+      providers: registry,
+      usageStore: new InMemoryUsageStore(),
+      auditLogger: new AuditLogger(new InMemoryAuditSink()),
+      config: parseConfig({}),
+    });
+
+    const outcome = await orchestrator.runTask(buildTask({ command: 'ask', workingDirectory: workDir }));
+    expect(outcome.verdict).toBe('SUCCESS');
+    expect(outcome.attempts[0]!.result.rawOutputPath).toBeUndefined();
+    await expect(access(join(workDir, '.dispatcher', 'runs'))).rejects.toThrow();
   });
 });
