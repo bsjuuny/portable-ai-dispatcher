@@ -232,13 +232,9 @@ export class Orchestrator {
     }
 
     const implementerId = attempts.at(-1)?.provider ?? routing.selected;
+    const runValidation = () => this.runValidationForTask(task, context.project!);
 
-    let validation = await runValidationPipeline({
-      taskId: task.id,
-      cwd: task.workingDirectory,
-      project: context.project,
-      protectedPaths: this.deps.config.safety.protectedPaths,
-    });
+    let validation = await runValidation();
 
     if (!validation.passed) {
       task.status = transition(task.status, 'fixing', { taskId: task.id });
@@ -246,13 +242,7 @@ export class Orchestrator {
 
       validation = await runFixLoop(
         validation,
-        () =>
-          runValidationPipeline({
-            taskId: task.id,
-            cwd: task.workingDirectory,
-            project: context.project!,
-            protectedPaths: this.deps.config.safety.protectedPaths,
-          }),
+        runValidation,
         async (failedResult) => {
           const fixContext = { ...context, validationResults: [failedResult] };
           const implementer = this.deps.providers.get(implementerId);
@@ -329,12 +319,7 @@ export class Orchestrator {
         approval: this.deps.config.execution.approval,
         timeoutMs: this.deps.config.execution.timeoutMs,
       });
-      validation = await runValidationPipeline({
-        taskId: task.id,
-        cwd: task.workingDirectory,
-        project: context.project,
-        protectedPaths: this.deps.config.safety.protectedPaths,
-      });
+      validation = await runValidation();
       task.status = transition(task.status, 'validating', { taskId: task.id });
       if (!validation.passed) {
         task.status = transition(task.status, 'failed', { taskId: task.id });
@@ -358,6 +343,25 @@ export class Orchestrator {
     if (!this.deps.config.review.preferIndependentReviewer) return implementerId;
     const other = routing.scores.find((s) => s.provider !== implementerId && s.eligible);
     return other?.provider ?? implementerId;
+  }
+
+  /**
+   * The single call site for running the validation pipeline, so config.validation.
+   * commands is always threaded through - having three separate inline call sites
+   * previously let one of them silently omit commandOverrides, which meant a
+   * configured custom test command was ignored and validation trivially "passed" by
+   * falling through to project-analyzer auto-detection (empty commands on a bare
+   * repo). Caught by tests/unit/orchestrator.test.ts, fixed here structurally rather
+   * than by re-copying the options object a third time.
+   */
+  private runValidationForTask(task: DispatcherTask, project: NonNullable<Awaited<ReturnType<typeof buildTaskContext>>['project']>) {
+    return runValidationPipeline({
+      taskId: task.id,
+      cwd: task.workingDirectory,
+      project,
+      protectedPaths: this.deps.config.safety.protectedPaths,
+      commandOverrides: this.deps.config.validation.commands,
+    });
   }
 }
 
