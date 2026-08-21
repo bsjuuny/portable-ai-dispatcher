@@ -12,10 +12,17 @@ export default defineConfig({
   },
   format: ['esm'],
   target: 'node20',
+  platform: 'node',
   dts: true,
   sourcemap: true,
   clean: true,
   skipNodeModulesBundle: true,
+  // esbuild has been observed to rewrite `node:sqlite` to the bare specifier
+  // `sqlite` (which does not exist as an npm package) despite `platform: 'node'` -
+  // explicitly listing it external, with the exact prefixed spelling, works around
+  // that rewrite. Verified by inspecting dist/cli.js after build - see
+  // docs/architecture.md.
+  external: ['node:sqlite'],
   banner: {
     js: '#!/usr/bin/env node',
   },

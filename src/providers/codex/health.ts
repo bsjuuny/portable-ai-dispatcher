@@ -50,7 +50,11 @@ export async function checkCodexHealth(opts: { timeoutMs?: number } = {}): Promi
 
   const stdout = loginOutcome?.stdout.trim() ?? '';
   const stderr = loginOutcome?.stderr.trim() ?? '';
-  const authenticated = loginOutcome?.exitCode === 0 && /logged in/i.test(stdout);
+  // Verified live: `codex login status` writes "Logged in using ..." to STDERR, not
+  // stdout (confirmed by inspecting ProcessOutcome directly - a plain `2>&1`-shell
+  // test misleadingly merges the streams and hides this). Check both rather than
+  // assuming which stream a given CLI uses.
+  const authenticated = loginOutcome?.exitCode === 0 && /logged in/i.test(`${stdout}\n${stderr}`);
   const configBroken = /error loading configuration/i.test(stderr);
 
   return {

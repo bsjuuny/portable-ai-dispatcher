@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from './db.js';
 import type { DispatcherTask, TaskStatus } from '../models/task.js';
 import type { ProviderId } from '../models/provider.js';
 import type { AuditEvent, AuditSink } from '../logging/audit.js';
@@ -88,6 +88,11 @@ export class HistoryRepository implements UsageStore, AuditSink {
 
   getExecutionsForTask(taskId: string): Array<Record<string, unknown>> {
     const stmt = this.db.prepare(`SELECT * FROM executions WHERE task_id = ? ORDER BY started_at ASC`);
+    return stmt.all(taskId) as Array<Record<string, unknown>>;
+  }
+
+  getAuditEventsForTask(taskId: string): Array<Record<string, unknown>> {
+    const stmt = this.db.prepare(`SELECT * FROM audit_events WHERE task_id = ? ORDER BY sequence ASC`);
     return stmt.all(taskId) as Array<Record<string, unknown>>;
   }
 

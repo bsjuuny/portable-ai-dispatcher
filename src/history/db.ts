@@ -1,6 +1,15 @@
-import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type * as NodeSqliteModule from 'node:sqlite';
+
+// Both static AND dynamic `import ... from 'node:sqlite'` get rewritten by esbuild
+// to the bare specifier `sqlite` (a nonexistent npm package) - verified directly
+// against dist output, with platform:'node' and explicit `external` config making no
+// difference. `process.getBuiltinModule()` (Node 22+) is a plain runtime function
+// call with a string argument, invisible to esbuild's static import-graph analysis,
+// so it isn't subject to the same rewrite.
+const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof NodeSqliteModule;
+export type DatabaseSync = NodeSqliteModule.DatabaseSync;
 
 /**
  * node:sqlite (not better-sqlite3) - verified live to work on the installed Node
