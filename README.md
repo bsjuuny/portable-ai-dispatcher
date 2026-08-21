@@ -1,5 +1,7 @@
 # AI Dispatcher v1.0
 
+English | [한국어](README.ko.md)
+
 An AI Development Control Plane: a CLI that routes coding tasks between Claude Code and Codex, verifies the result with real build/test/lint, and has the *other* AI independently review the change before declaring success.
 
 This is not a wrapper that just runs `claude` or `codex` for you. It classifies the task, scores both providers against real health/usage/capability data, dispatches with retry/fallback/circuit-breaking, runs your actual validation pipeline (with a bounded automatic fix loop on failure), routes the diff to an independent reviewer, and records everything to a structured audit log and a local SQLite history — so "the AI said it worked" and "the system verified it worked" are never the same claim.
