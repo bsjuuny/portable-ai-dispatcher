@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a02392-7c50-7cc2-bae7-f62c2551dae9"}
+{"type":"turn.started"}
+{"type":"error","message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 22nd, 2026 10:58 AM."}
+{"type":"turn.failed","error":{"message":"You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 22nd, 2026 10:58 AM."}}
+성공: PID 19188인 프로세스(PID 15152인 자식 프로세스)가 종료되었습니다.
