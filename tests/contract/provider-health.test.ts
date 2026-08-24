@@ -62,6 +62,7 @@ describe('health check against a nonexistent CLI (not-installed path)', () => {
       expect(health.installed).toBe(false);
       expect(health.ready).toBe(false);
       expect(health.authenticated).toBeNull();
+      expect(health.reasonCode).toBe('PROVIDER_NOT_INSTALLED');
     } finally {
       process.env['PATH'] = originalPath;
     }
@@ -75,6 +76,7 @@ describe('health check against a nonexistent CLI (not-installed path)', () => {
       expect(health.installed).toBe(false);
       expect(health.ready).toBe(false);
       expect(health.authenticated).toBeNull();
+      expect(health.reasonCode).toBe('PROVIDER_NOT_INSTALLED');
     } finally {
       process.env['PATH'] = originalPath;
     }

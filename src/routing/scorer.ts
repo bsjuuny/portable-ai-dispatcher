@@ -41,6 +41,7 @@ export function scoreProvider(input: ScoreInput, weights: RoutingWeights = DEFAU
       components: zeroComponents(),
       eligible: false,
       ineligibleReason: input.health.message ?? 'Provider is not ready.',
+      ineligibleCode: input.health.reasonCode,
     };
   }
   if (input.health.rateLimited) {
@@ -50,6 +51,7 @@ export function scoreProvider(input: ScoreInput, weights: RoutingWeights = DEFAU
       components: zeroComponents(),
       eligible: false,
       ineligibleReason: 'Provider is rate limited.',
+      ineligibleCode: 'PROVIDER_RATE_LIMITED',
     };
   }
 
@@ -57,6 +59,15 @@ export function scoreProvider(input: ScoreInput, weights: RoutingWeights = DEFAU
   const required = input.classification.requiredCapabilities;
   const matched = required.filter((c) => providerCapabilities.has(c)).length;
   const capabilityFit = required.length ? matched / required.length : 0.5;
+  if (required.length > 0 && matched === 0 && input.provider.dataResidency === 'local') {
+    return {
+      provider: input.provider.id,
+      total: -Infinity,
+      components: zeroComponents(),
+      eligible: false,
+      ineligibleReason: `Local provider lacks every required capability: ${required.join(', ')}.`,
+    };
+  }
 
   const usageCapacity = clamp01(
     1 - input.usage1h.requests / MAX_REASONABLE_REQUESTS_PER_HOUR,

@@ -31,6 +31,9 @@ export function buildReviewPrompt(task: DispatcherTask, diff: GitDiffSummary): s
     `## Files Changed`,
     diff.changedFiles.map((f) => `- ${f}`).join('\n') || '(none reported)',
     ``,
+    `## Patch${diff.patchTruncated ? ' (truncated)' : ''}`,
+    diff.patchText || '(no patch content reported)',
+    ``,
     `## Review Dimensions`,
     REVIEW_DIMENSIONS.map((d) => `- ${d}`).join('\n'),
     ``,
@@ -77,6 +80,36 @@ export async function runReview(options: RunReviewOptions): Promise<ReviewResult
   const startedAt = Date.now();
   const prompt = buildReviewPrompt(options.task, options.diff);
   const result = await options.dispatchReview(prompt);
+
+  // The reviewer's dispatch can fail outright (provider error, timeout, ...) rather
+  // than merely return a badly-formatted response - found live (2026-08-22) when the
+  // configured Codex CLI couldn't run at all (unsupported model), yet the review step
+  // silently reported approve_with_warning because result.text was empty, same as a
+  // real reviewer's formatting slip. Treated the same, a fully-broken reviewer would
+  // let any change through review, defeating the whole point of the safety gate once
+  // safety.autoApply.enabled is on. A dispatch failure is fail-closed here (verdict
+  // 'critical', which hasBlockingFindings() below already treats as blocking) instead
+  // of being routed into parseReviewResponse()'s "assume it's just unparseable text"
+  // fallback, which exists for the different case of a reviewer that DID run.
+  if (result.status !== 'success' && result.status !== 'success_with_warning') {
+    return {
+      taskId: options.task.id,
+      reviewer: options.reviewer,
+      implementer: options.implementer,
+      independentReview: options.independentReview,
+      verdict: 'critical',
+      findings: [
+        {
+          severity: 'critical',
+          category: 'review-execution-failed',
+          message: `Reviewer (${options.reviewer}) failed to execute (status=${result.status}): ${result.error?.message ?? 'no error detail'}`,
+        },
+      ],
+      cycle: options.cycle,
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
   const parsed = parseReviewResponse(result.text ?? result.summary ?? '');
 
   return {

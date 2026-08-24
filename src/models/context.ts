@@ -2,6 +2,7 @@ import type { TaskAttachment } from './task.js';
 import type { TaskResult } from './result.js';
 import type { ValidationResult } from './validation.js';
 import type { ReviewResult } from './review.js';
+import type { RepositoryMetrics } from './classification.js';
 
 export interface ProjectContext {
   root: string;
@@ -11,6 +12,7 @@ export interface ProjectContext {
   buildTool?: string;
   packageManager?: string;
   testFramework?: string;
+  metrics?: RepositoryMetrics;
   commands: {
     lint?: string[];
     typecheck?: string[];
@@ -44,11 +46,20 @@ export interface WindowedAttachment {
   truncated: boolean;
 }
 
+/** A bounded, name-only listing assembled by Dispatcher for a folder-inventory
+ * question. It never includes file contents or common secret/build directories. */
+export interface DirectoryInventory {
+  root: string;
+  entries: string[];
+  omittedEntryCount: number;
+}
+
 export interface TaskContext {
   project?: ProjectContext;
   relatedFiles?: string[];
   attachments?: TaskAttachment[];
   windowedAttachments?: WindowedAttachment[];
+  directoryInventory?: DirectoryInventory[];
   memorySnippets?: MemorySnippet[];
   previousResults?: TaskResult[];
   validationResults?: ValidationResult[];

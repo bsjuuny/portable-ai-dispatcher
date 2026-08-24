@@ -74,6 +74,19 @@ export class CircuitBreaker {
     }
   }
 
+  /**
+   * Forces the circuit fully open immediately, bypassing the sliding-window
+   * failure threshold - for signals that already prove the provider is unusable
+   * right now (a confirmed rate-limit/usage-quota response), where waiting for
+   * `failureThreshold` more failures would just burn more attempts against a
+   * provider already known to be exhausted before the breaker would normally trip.
+   */
+  tripOpen(provider: ProviderId, now: number = Date.now()): void {
+    const circuit = this.getOrCreate(provider);
+    circuit.state = 'open';
+    circuit.openedAt = now;
+  }
+
   stateOf(provider: ProviderId): CircuitState {
     return this.circuits.get(provider)?.state ?? 'closed';
   }

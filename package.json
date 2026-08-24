@@ -1,7 +1,7 @@
 {
   "name": "ai-dispatcher",
-  "version": "1.0.0",
-  "description": "AI Development Control Plane - routes coding tasks between Claude Code and Codex, validates results with real build/test/lint, and cross-reviews with an independent AI before declaring success.",
+  "version": "1.1.0",
+  "description": "AI Development Control Plane - routes coding tasks between Claude Code, Codex, and local models (Ollama/llama.cpp), validates results with real build/test/lint, and cross-reviews with an independent AI before declaring success.",
   "type": "module",
   "license": "UNLICENSED",
   "private": true,
@@ -31,6 +31,9 @@
     "js-yaml": "^5.3.0",
     "pino": "^10.3.1",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "@vscode/windows-process-tree": "0.8.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",

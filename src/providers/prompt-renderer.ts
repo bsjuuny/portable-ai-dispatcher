@@ -12,6 +12,16 @@ export function renderTaskPrompt(task: DispatcherTask, context: TaskContext): st
 
   sections.push(`# Task (${task.command})\n\n${task.specification.rawDescription}`);
 
+  if (task.executionPlan) {
+    const providerUnits = task.executionPlan.workUnits
+      .filter((unit) => unit.owner === 'provider')
+      .map((unit) => `- [${unit.id}] ${unit.objective}`)
+      .join('\n');
+    sections.push(
+      `## Dispatcher Plan\n- intent: ${task.executionPlan.intent}\n- scope: ${task.executionPlan.scope}\n- complexity: ${task.executionPlan.complexity}\n\n### Your Work Units\n${providerUnits || '(none)'}`,
+    );
+  }
+
   const structured = task.specification.structured;
   if (structured?.errorCodes?.length) {
     sections.push(`## Error Codes\n${structured.errorCodes.join(', ')}`);

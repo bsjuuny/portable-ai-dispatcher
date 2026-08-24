@@ -1,8 +1,8 @@
-# AI Dispatcher v1.0
+# AI Dispatcher
 
 English | [한국어](README.ko.md)
 
-An AI Development Control Plane: a CLI that routes coding tasks between Claude Code and Codex, verifies the result with real build/test/lint, and has the *other* AI independently review the change before declaring success.
+An AI Development Control Plane: a CLI that routes coding tasks between Claude Code, Codex, and local models (Ollama, llama.cpp, or OpenAI-compatible servers), verifies the result with real build/test/lint, and has the *other* AI independently review the change before declaring success.
 
 This is not a wrapper that just runs `claude` or `codex` for you. It classifies the task, scores both providers against real health/usage/capability data, dispatches with retry/fallback/circuit-breaking, runs your actual validation pipeline (with a bounded automatic fix loop on failure), routes the diff to an independent reviewer, and records everything to a structured audit log and a local SQLite history — so "the AI said it worked" and "the system verified it worked" are never the same claim.
 
@@ -13,11 +13,13 @@ src/
 ├─ models/        Domain types + DispatcherError (shared by every layer)
 ├─ core/           State machine, Orchestrator (the runTask() pipeline), execution glue
 ├─ task/           Task Specification parsing, input resolution, classifier
-├─ providers/      AIProvider interface + ProviderRegistry; claude/ and codex/ adapters
+├─ providers/      AIProvider interface + ProviderRegistry; claude/, codex/, and local/ adapters
 ├─ routing/        Usage tracking, scoring, provider selection, retry/fallback/circuit-breaker
 ├─ project/        Project analyzer, memory (JSON), log windowing, context builder
 ├─ validation/     git-diff, build/test/lint/typecheck runners, pipeline, fix loop
 ├─ review/         Review coordinator (prompts a reviewer, parses its verdict), conflict resolver
+├─ safety/         Workspace isolation, repository lock, base-revision/content-hash TOCTOU guards,
+│                  risk classifier, Auto-Apply Safety Gate, patch apply
 ├─ process/        The single execa call site (process-runner.ts)
 ├─ logging/        pino logger, secret redaction, audit event log
 ├─ history/        node:sqlite-backed task/execution/audit history
@@ -79,13 +81,25 @@ ai-dispatcher review <task-spec>
 ai-dispatcher fix <task-spec>          # code-changing: runs validation + fix loop + review
 ai-dispatcher implement <task-spec>    # code-changing: same as above
 
-ai-dispatcher doctor [--json]          # health-check both providers
+ai-dispatcher doctor [--json]          # health-check both cloud providers + local runtimes
 ai-dispatcher providers [--json]       # list capabilities
 ai-dispatcher usage [provider] [--json]# 1h/24h/7d/all request+cost stats
 ai-dispatcher history [--limit N]      # recent tasks
 ai-dispatcher inspect <taskId>         # full detail for one task
 ai-dispatcher explain <taskId>         # why a provider was selected, with score breakdown
+
+ai-dispatcher local status [--json]    # runtime reachability + configured local.profiles[] health
+ai-dispatcher local runtimes [--json]  # local runtime reachability, independent of any profile
+ai-dispatcher local models [--json]    # real installed model inventory per reachable runtime
+ai-dispatcher preflight [--json]       # CPU/GPU profile + offline runtime/model-pack readiness
+ai-dispatcher local benchmark [name]   # qualify a configured local model and cache throughput
+ai-dispatcher local import-pack <dir>  # verify and copy a pre-downloaded model pack
+ai-dispatcher portable assemble <dir>  # create a USB-portable offline kit
 ```
+
+While a dispatch command (`ask`/`analyze`/`review`/`fix`/`implement`) is running, live status - provider selection, each execution attempt starting/finishing, retries, fallback, validation, review - is streamed to **stderr** as it happens (never stdout, so `--json`'s machine-readable output is untouched). A long-running single execution also gets a periodic "still waiting on `<provider>` (`Ns` elapsed)" heartbeat every 30s. This exists because the CLI used to print nothing at all until the entire task finished, which for a multi-minute run left no way to tell "still working" from "hung" - found live (2026-08-22) during an 11-minute stall with zero terminal output the whole time. A final human-readable (or `--json`) summary still prints at the end regardless.
+
+The final summary includes a structured **5W1H result report**: who dispatched, implemented, and reviewed the task; when and where it ran; what changed and whether those changes were applied, withheld, discarded, or left in place; why the provider was selected; and how execution, validation, and review completed. Human output uses concise Korean labels (`누가`, `언제`, `어디서`, `무엇을`, `왜`, `어떻게`). `--json` exposes the same data under `resultReport`, and the sanitized report is persisted as the append-only `task.report.created` audit event.
 
 Every dispatch command accepts:
 
@@ -96,7 +110,7 @@ Every dispatch command accepts:
 | `--path <paths...>` | Related file/directory paths to include as context |
 | `--cwd <path>` | Working directory (default: current directory) |
 | `--timeout <ms>` | Execution timeout |
-| `--provider <id>` | Force `claude` or `codex` instead of routing |
+| `--provider <id>` | Force `claude`, `codex`, or `local-<profile>` instead of routing |
 | `--dry-run` | Print the routing decision and built command, execute nothing |
 | `--json` | Machine-readable output |
 | `--debug` | Raise the application log to debug level (NDJSON to stdout) |
@@ -160,6 +174,93 @@ routing:
 
 `ai-dispatcher explain <taskId>` prints the exact score breakdown that produced a decision — every component, every provider, in the same format you'd see in the routing log.
 
+## Local LLM Provider (Ollama / llama.cpp / OpenAI-compatible)
+
+Local models plug into the exact same `AIProvider`/`ProviderRegistry` system Claude and Codex use — routing, retry/fallback, audit logging, and history need no special-casing. Each configured profile is registered as a provider with id `local-<name>` and is routable like any other, including via `--provider local-<name>`.
+
+```yaml
+local:
+  runtimes:
+    ollama:   { enabled: true,  host: http://127.0.0.1:11434 }
+    llamacpp: { enabled: false, host: http://127.0.0.1:8080 } # off by default - see Known Limitations
+    openai-compatible: { enabled: false, host: http://127.0.0.1:1234 }
+  profiles:
+    - name: fast
+      runtime: ollama
+      model: qwen3:4b
+```
+
+**How autonomous local coding works.** Local completion APIs do not need native tool calling. For `fix`/`implement`, `LocalProvider` runs a runtime-neutral dispatcher tool loop: the model emits one schema-constrained JSON action to list/read/search/replace/write files, the dispatcher executes it inside the isolated worktree, and the normal validation/fix-loop/review/Auto-Apply gate handles the result. Reads are bounded, path traversal and `.git`/`.dispatcher`/dependency access are rejected, writes require the current file version to have been read, repeated mutations are blocked, and file/turn/token limits are configurable under `local.coding`. Shell execution is deliberately not exposed to the model; the existing validation pipeline owns build/lint/test commands. This loop is used identically by Ollama, llama.cpp, and OpenAI-compatible local servers.
+
+**The `<think>` stripping is not a decoration — it's a real, live-discovered fix.** Even with `"think": false` in the request, `qwen3:4b` still emitted a full reasoning preamble ahead of the actual answer — and not wrapped in a matching `<think>...</think>` pair the way the model card implies: the observed shape has no opening tag at all, only an orphaned `</think>` immediately before the real answer. `providers/local/local-http-client.ts`'s `stripThinking()` handles both the documented balanced-tag shape and this actually-observed orphaned-tag shape, so a caller only ever sees the answer.
+
+**Network safety**: `providers/local/local-http-client.ts` is the *only* file allowed to call the global `fetch()` (enforced by `tests/security/local-fetch-single-chokepoint.test.ts`, a source-level static scan mirroring how `process-runner.ts` is the sole process-spawn chokepoint). It rejects any host that isn't `127.0.0.1`/`localhost`/`::1` before making a request, and every call carries an `AbortSignal.timeout()`.
+
+`llama.cpp` support (`providers/local/llamacpp-runtime.ts`) is **unverified** — `llama-server`/`llama-cli` were not installed on the machine this was implemented on, so the adapter is written from llama.cpp's published server API (`GET /health`, `GET /v1/models`, `POST /completion`) with no real integration test, only mocked unit tests. `local.runtimes.llamacpp.enabled` defaults to `false` for exactly this reason — enable it only after confirming it actually works against your own build.
+
+### CPU-first offline model packs
+
+CPU is the baseline, not a fallback after GPU detection. `ai-dispatcher preflight` builds a best-effort hardware profile, assigns `CPU_LITE`, `CPU_STANDARD`, `CPU_PLUS`, `GPU_STANDARD`, or `AI_WORKSTATION`, and selects runtime artifacts in CUDA → Vulkan → CPU order. An ISA-specific binary is selected only when its ISA is positively detected; otherwise only a generic CPU binary is safe. This avoids illegal-instruction failures on unknown machines.
+
+```text
+runtime/
+  windows-x64-generic/runtime-manifest.json
+models/
+  cpu-standard/model-pack.json
+  cpu-standard/<model>.gguf
+```
+
+Model packs declare RAM/VRAM requirements, roles, context recommendations, optional SHA-256, and licence/source metadata. Preflight reports `READY_FAST`, `READY`, `READY_SLOW`, `SUPPORTED_BUT_NOT_RECOMMENDED`, or `UNSUPPORTED` and never downloads a missing model. `local import-pack <directory>` validates path containment, optional licence policy, and each declared SHA-256 before copying. `local benchmark [profile]` measures the configured local endpoint and stores a hardware-fingerprint-qualified result at `.dispatcher/local/qualification.json`.
+
+```yaml
+local:
+  cpu: { maxThreads: auto, reserveCores: 2 }
+  bundle:
+    runtimeDirectory: runtime
+    modelPacksDirectory: models
+    offlineKitRequired: true
+    requireModelLicenseMetadata: true
+```
+
+GPU/NPU discovery is optional. An audited installer can supply GPU hints through `AI_DISPATCHER_GPU_VENDOR`, `AI_DISPATCHER_GPU_MODEL`, `AI_DISPATCHER_GPU_MEMORY_BYTES`, and `AI_DISPATCHER_GPU_BACKENDS`; CPU execution remains valid when they are absent.
+
+### USB-portable kit
+
+After building, run `ai-dispatcher portable assemble <folder>`. Copy that single generated folder to the USB drive. It contains the current Node.js 22+ executable, built app with JavaScript dependencies bundled into `dist`, portable configuration, launch scripts, and any `runtime/` and `models/` directories already present in the source checkout. It never downloads assets.
+
+Before the USB kit can run, confirm the copied Node.js 22+ `runtime/node/node.exe`, then add a reviewed generic CPU runtime plus `runtime-manifest.json` under `runtime/` and verified model packs under `models/`. Then use `bin/preflight.cmd`; it must report `READY`. The launcher keeps the USB bundle as the asset root even when called from another project folder, while that project remains the workspace and owner of `.dispatcher/` history.
+
+### Closed-network deployment
+
+For an air-gapped or firewall-denied environment, disable both cloud providers and register only loopback local profiles:
+
+```yaml
+providers:
+  claude: { enabled: false }
+  codex: { enabled: false }
+local:
+  runtimes:
+    ollama: { enabled: true, host: http://127.0.0.1:11434 }
+    llamacpp: { enabled: false }
+    openai-compatible: { enabled: false, host: http://127.0.0.1:1234 }
+  profiles:
+    - name: airgap
+      runtime: ollama
+      model: your-installed-model
+  allowAutoDownload: false
+  coding:
+    enabled: true
+    maxTurns: 24
+    maxFilesChanged: 20
+    maxFileBytes: 1048576
+    maxReadLines: 400
+    maxOutputTokens: 1024
+```
+
+With this configuration, cloud providers are not registered and cannot be restored with `--provider`; local HTTP is restricted to loopback, and an unreachable local runtime fails closed with `NO_AVAILABLE_PROVIDER`. Analysis, review, documentation, and autonomous code editing all remain local. The host OS/firewall must still enforce the network boundary for validation commands and project scripts, which the dispatcher executes but cannot prove are network-free.
+
+For LM Studio, vLLM, LocalAI, text-generation-webui, or another server exposing the OpenAI API, enable `local.runtimes.openai-compatible` and set a profile's `runtime: openai-compatible`. A proprietary local protocol needs only a `LocalRuntimeAdapter` implementing detect/list/generate; the autonomous coding loop is shared and requires no backend-specific rewrite.
+
 ## Validation and the fix loop
 
 For `fix`/`implement` tasks, after execution: `git diff` (checks for protected-path modifications) → typecheck → lint → build → test, in that order, stopping at the first failure. On failure, the failed stage's output is attached to a follow-up task sent back to the *same* implementer, and validation re-runs — bounded by `validation.maxFixAttempts` (default 2). It never loops unboundedly.
@@ -181,6 +282,37 @@ If only one provider is `Ready` (installed + authenticated + reachable), the dis
 
 Disagreement between what a reviewer says and what validation shows is resolved by evidence, not majority vote (there's only ever one active reviewer per cycle anyway): `review/conflict-resolver.ts` checks the latest `ValidationResult` before deciding whether a persisting finding gets accepted as a warning or escalated to the user.
 
+## Autonomous operation: workspace isolation + the Auto-Apply Safety Gate
+
+By default (`safety.workspaceIsolation.enabled: true`), a code-changing task (`fix`/`implement`) never executes directly against your working tree. Instead, the orchestrator:
+
+1. Acquires an exclusive **repository lock** (in-memory, per-process — see Known Limitations) so a second code-changing task on the same repository is rejected with a retryable `REPOSITORY_LOCKED` error rather than racing.
+2. Creates a real **`git worktree`** checked out at the current `HEAD` (the "base revision") and runs the *entire* existing dispatch → validate → fix-loop → review pipeline against that isolated copy, completely unmodified — your real working tree is never `reset`, `checkout`ed, or `clean`ed by any of this.
+3. Once validation passes and review is non-blocking, computes the **risk level** of the change (`safety/risk-classifier.ts`): any touch to a `safety.protectedPaths` entry or a CI/CD pipeline file (`.github/workflows/**`, `.gitlab-ci.yml`, `azure-pipelines.yml`, `Jenkinsfile`) is `CRITICAL` regardless of size; otherwise it's `LOW`/`MEDIUM`/`HIGH` based on how far the file/line counts are over `safety.blastRadius`'s per-task-type limits.
+4. Re-checks, immediately before touching anything real, that the base revision hasn't moved (`BASE_REVISION_CHANGED`) and that no file the patch touches was edited in your real working tree without a commit in the meantime (`STALE_PATCH` — a TOCTOU guard `git rev-parse HEAD` alone can't catch, since an uncommitted edit doesn't move `HEAD`).
+5. Decides **`AUTO_APPLY` / `BLOCKED_BY_POLICY` / `FAILED`** (`safety/auto-apply-gate.ts`) — fail-closed: every one of validation-passed, review-non-blocking, lock-held, base-revision-matches, content-hashes-match, `autoApply.enabled`, and risk-within-`maxRiskLevel` must hold, or the change is discarded, never applied by default or by guesswork.
+6. On `AUTO_APPLY`, merges the worktree's changes into your real working tree as an ordinary **uncommitted** diff via `git apply` (`safety/patch-apply.ts`) — it never commits on your behalf. On anything else, the worktree (and whatever the AI changed inside it) is simply discarded.
+
+```yaml
+safety:
+  protectedPaths: [.env, secrets/, production.yml]
+  workspaceIsolation:
+    enabled: true          # the escape hatch back to pre-increment direct-execution behavior is `false`
+  blastRadius:
+    bugfix:         { maxFiles: 15, maxChangedLines: 400 }
+    implementation:  { maxFiles: 30, maxChangedLines: 1000 }
+    refactor:       { maxFiles: 50, maxChangedLines: 2000 }
+  autoApply:
+    enabled: false          # ships OFF - see the callout below
+    maxRiskLevel: MEDIUM    # CRITICAL is never auto-appliable, no override exists
+```
+
+**Read this before you rely on it**: `safety.autoApply.enabled` defaults to **`false`**. That means, out of the box, a `fix`/`implement` task that fully succeeds — validation passes, review approves — now reports **`BLOCKED_BY_POLICY`** instead of `SUCCESS`, and *nothing lands in your repository*, a real behavior change from a config that previously had no `safety.autoApply` key at all to react to. This is intentional: the whole point of this capability is safe-by-default autonomous operation, and a system that silently starts auto-committing AI changes the moment you upgrade would be the opposite of that. Set `safety.autoApply.enabled: true` once you've reviewed the risk/blast-radius thresholds above and decided they match your threat model; `ai-dispatcher fix "..." --dry-run` and a first few `BLOCKED_BY_POLICY` runs (check `ai-dispatcher explain <taskId>` / `ai-dispatcher inspect <taskId>`) are the way to see exactly what *would* have been applied before turning it on for real.
+
+`workspaceIsolation.enabled: false` is the literal opt-out back to the direct-execution behavior every `fix`/`implement` task had before this capability existed: no worktree, no repository lock, no risk gate — the change lands the moment the provider finishes, exactly as before.
+
+**The AI never sees your uncommitted local changes while isolation is on.** `git worktree add` checks out the pinned base revision — a commit — not your working tree's current (possibly dirty) state. If you have uncommitted edits when you run `fix`/`implement`, the AI works from the last commit, unaware of what you were in the middle of changing. This can't corrupt anything — `STALE_PATCH` still blocks the apply if the AI's patch and your uncommitted edit land on the *same* file — but the AI's understanding of "what the code currently looks like" can be stale relative to your actual working tree, which may produce a fix that doesn't account for work you hadn't committed yet. Commit or stash first if that matters for the task at hand.
+
 ## Audit and history
 
 Every task gets a `taskId`; every execution attempt (including retries and fallbacks) gets its own `executionId`, all linked to the same task. Structured audit events (`task.created`, `provider.selected`, `retry.started`, `validation.failed`, `review.completed`, ...) are appended (never rewritten) to a local SQLite database at `.dispatcher/history.sqlite` in the project you ran `ai-dispatcher` against.
@@ -188,6 +320,8 @@ Every task gets a `taskId`; every execution attempt (including retries and fallb
 **By default, prompt and response text are never stored** — only their SHA-256 hash and length. Set `diagnostics.logPrompts: true` in config to opt into storing raw text, and even then it passes through secret scrubbing first (AWS/OpenAI/Anthropic/GitHub-token-shaped strings, JWTs, PEM blocks, `.env`-style secret lines are replaced with `[REDACTED]`).
 
 `ai-dispatcher history [--limit N]` lists recent tasks; `ai-dispatcher inspect <taskId>` shows one task plus every execution attempt made for it (provider, timing, token/cost usage); `ai-dispatcher explain <taskId>` shows the routing score breakdown that led to the provider that was picked (see [Routing](#routing) above).
+
+The 5W1H result report (above) is not saved as a separate file — it lives only in the terminal output at the time, and as the `task.report.created` audit event. `ai-dispatcher inspect <taskId>` reads that event back and reprints the same report, so you don't need to scroll back through old terminal output or query `.dispatcher/history.sqlite` directly to see it again.
 
 ### Failure artifacts
 
@@ -218,8 +352,16 @@ Running `ai-dispatcher` against a project creates a `.dispatcher/` directory ins
 ```yaml
 execution:
   timeoutMs: 300000
+  adaptiveTimeout:
+    enabled: true
+    simpleMs: 300000
+    normalMs: 900000
+    complexMs: 1800000
+    idleMs: 300000
+    maximumMs: 3600000
   sandbox: workspace-write      # read-only | workspace-write | danger-full-access
   approval: never                # untrusted | on-request | never (Codex's -a flag)
+  maxTaskInputBytes: 8388608     # 8MB - total bytes across description + attachments, rejected before dispatch
 retry:
   maxRetries: 1
 circuitBreaker:
@@ -233,9 +375,32 @@ review:
   preferIndependentReviewer: true
 safety:
   protectedPaths: [.env, secrets/, production.yml]
+  workspaceIsolation:
+    enabled: true
+  blastRadius:
+    bugfix: { maxFiles: 15, maxChangedLines: 400 }
+    implementation: { maxFiles: 30, maxChangedLines: 1000 }
+    refactor: { maxFiles: 50, maxChangedLines: 2000 }
+  autoApply:
+    enabled: false
+    maxRiskLevel: MEDIUM
+local:
+  runtimes:
+    ollama: { enabled: true, host: http://127.0.0.1:11434 }
+    llamacpp: { enabled: false, host: http://127.0.0.1:8080 }
+  profiles: []
+  allowAutoDownload: false
 ```
 
-**Security-relevant defaults, explained, not just declared**: `execution.approval: never` means Codex is run with `-a never` (never prompts for approval) because nothing is present to answer a prompt in non-interactive automation — `on-failure` is deprecated by Codex itself, and `untrusted`/`on-request` would hang waiting for input that will never come. `execution.sandbox: workspace-write` (not `danger-full-access`) is the narrowest mode that still lets an implementer edit files. Both are deliberately chosen, not silently defaulted — override them in config if your threat model needs something stricter (e.g. `read-only` for a pure-analysis deployment).
+### Autonomous planning and adaptive execution
+
+The CLI does not require operators to choose a provider or timeout for normal use. Before routing, it measures the repository (bounded file/source/test/package counts), infers whether the request is targeted, module-wide, or repository-wide, and creates a structured supervisor plan. A repository-wide `fix` request is classified as `repository-remediation`/`complex` and receives the complex execution budget automatically.
+
+`adaptiveTimeout` separates a hard ceiling from an activity lease. stdout/stderr activity renews the idle lease, so an agent that is still issuing commands or editing files is not killed merely because the old fixed five-minute timer elapsed. A silent process is stopped after `idleMs`; every process still has a bounded hard ceiling. `--timeout` remains an optional operator override and is capped by `maximumMs`.
+
+If an attempt reaches a timeout after changing the isolated worktree, the retry prompt explicitly inspects and continues the existing diff instead of replaying the original task from scratch. The plan, budget, activity, and checkpoint event are persisted in the audit trail.
+
+**Security-relevant defaults, explained, not just declared**: `execution.approval: never` means Codex is run with `-a never` (never prompts for approval) because nothing is present to answer a prompt in non-interactive automation — `on-failure` is deprecated by Codex itself, and `untrusted`/`on-request` would hang waiting for input that will never come. `execution.sandbox: workspace-write` (not `danger-full-access`) is the narrowest mode that still lets an implementer edit files. Both are deliberately chosen, not silently defaulted — override them in config if your threat model needs something stricter (e.g. `read-only` for a pure-analysis deployment). `safety.autoApply.enabled: false` and `safety.workspaceIsolation.enabled: true` are equally deliberate — see [Autonomous operation](#autonomous-operation-workspace-isolation--the-auto-apply-safety-gate) above for exactly what that combination means for a `fix`/`implement` task's default behavior.
 
 ## Development
 
@@ -258,3 +423,7 @@ node dist/cli.js doctor
 - **`node:sqlite` is Node's "Experimental" API tier** (not yet stable). All access is isolated behind `history/db.ts` + `history/repository.ts`, so swapping to `better-sqlite3` later (e.g. if a target environment has no admin rights and no prebuilt binary available, mirroring the exact constraint this implementation hit) is a two-file change.
 - **No coverage threshold gate in CI/`pnpm test:coverage`.** This is deliberate: a hard-failing threshold creates an incentive to weaken assertions or skip tests to hit a number, which is explicitly the wrong tradeoff here. Real per-module percentages are reported instead.
 - **`ProviderHealth.reachable` is not an independent network probe.** `doctor`'s output has separate `installed`/`authenticated`/`reachable`/`ready` fields (so a restricted-network deployment can in principle distinguish "CLI present, never logged in" from "logged in, but currently unreachable"), but in the current health-check implementations `reachable` is simply derived from `authenticated` (`true` if authenticated, `null` otherwise) rather than from a real independent connectivity check — no unnecessary external ping is made, but the field doesn't yet carry more signal than `authenticated` does.
+- **`llama.cpp` support is unverified.** No `llama-server`/`llama-cli` binary was available on the machine this was implemented on; `providers/local/llamacpp-runtime.ts` is written from the published server API and covered only by mocked unit tests, never a real integration run. `local.runtimes.llamacpp.enabled` defaults to `false` for this exact reason. Ollama, by contrast, was live-verified throughout (real `/api/tags`, `/api/version`, `/api/generate` calls against an actually-running instance, including `tests/contract/ollama-health.test.ts`, which is never skipped when Ollama is reachable).
+- **The repository lock and circuit breaker share the same limitation: per-process, in-memory only.** A second, separately-invoked `ai-dispatcher` process is not coordinated with — only concurrent code-changing tasks *within one process* are protected against racing on the same repository. Not a concern for typical one-shot CLI usage; would matter for a long-running server wrapping this library.
+- **Local autonomous coding quality depends on the model.** The dispatcher supplies safe tools and structured output constraints, but a small model can still choose an incomplete edit. Every result therefore goes through the same real validation, bounded correction loop, review, risk classification, and isolated Auto-Apply gate as cloud-provider work. `AI_DISPATCHER_LIVE_LOCAL_CODING=1 pnpm vitest run tests/contract/local-autonomous-coding-live.test.ts` runs the CPU-heavy live contract that edits a temporary file with `qwen3:4b`; larger repository work should use a capable coding model and conservative limits.
+- **The Local LLM Adapter + Hardening increment covers a deliberately scoped first batch, not the full ~90-mechanism spec it was requested against.** Explicitly deferred, not silently dropped: Model Governance/Qualification (`local qualify`), a Policy Engine with precedence rules, Data Egress Gateway/Classification, Offline Mode, Restricted Tool Mode, Environment Sanitization, Test-Integrity/anti-gaming checks, Dependency Change Policy, DB Migration Analyzer, Task Resource Budgets, Crash Recovery/Rollback beyond the worktree-discard already in place, Audit Integrity hash-chaining, Trust Key Rotation, signed offline bundles, deep hardware/GPU detection, and several more (see the increment's own planning notes). Everything shipped in this batch — Local LLM Provider, workspace isolation, repository lock, base-revision + content-hash TOCTOU guards, risk classification, and the Auto-Apply Safety Gate — is real and tested end-to-end against a real git repository and a real running Ollama instance, not stubbed.

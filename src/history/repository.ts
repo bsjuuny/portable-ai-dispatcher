@@ -146,6 +146,8 @@ export class HistoryRepository implements UsageStore, AuditSink {
       event.timestamp,
       JSON.stringify(event.data),
     ]);
+    if (event.type === 'retry.started') this.incrementRetryCount(event.taskId);
+    if (event.type === 'fallback.started') this.incrementFallbackCount(event.taskId);
   }
 
   private run(sql: string, params: unknown[]): void {

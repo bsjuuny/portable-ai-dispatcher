@@ -8,8 +8,11 @@ import type { AIProvider, ProviderCommandPlan, ProviderRunOptions } from '../typ
 import { buildCodexCommand } from './command-builder.js';
 import { checkCodexHealth } from './health.js';
 import { parseCodexStream } from './output-schema.js';
+import { isRateLimitText } from '../rate-limit-detection.js';
 
 const CAPABILITIES: ProviderCapability[] = [
+  'repository-analysis',
+  'analysis',
   'implementation',
   'bugfix',
   'test-generation',
@@ -45,7 +48,10 @@ export class CodexProvider implements AIProvider {
         provider: this.id,
         status: 'timeout',
         durationMs: outcome.durationMs,
-        error: { code: 'PROCESS_TIMEOUT', message: 'Codex execution timed out.' },
+        error: {
+          code: 'PROCESS_TIMEOUT',
+          message: `Codex execution timed out (${outcome.timeoutReason ?? 'hard'} timeout).`,
+        },
       };
     }
 
@@ -53,6 +59,7 @@ export class CodexProvider implements AIProvider {
     const finalMessage = await readOutputLastMessage(plan.metadata);
 
     if (stream.failed || stream.errors.length > 0) {
+      const message = stream.errors.join('; ') || 'Codex reported a failed turn.';
       return {
         taskId: task.id,
         executionId,
@@ -62,13 +69,14 @@ export class CodexProvider implements AIProvider {
         sessionId: stream.threadId,
         durationMs: outcome.durationMs,
         error: {
-          code: 'PROVIDER_TASK_FAILED',
-          message: stream.errors.join('; ') || 'Codex reported a failed turn.',
+          code: isRateLimitText(message, outcome.stderr) ? 'PROVIDER_RATE_LIMITED' : 'PROVIDER_TASK_FAILED',
+          message,
         },
       };
     }
 
     if (outcome.exitCode !== 0) {
+      const message = outcome.stderr.trim() || `codex exited with code ${outcome.exitCode}`;
       return {
         taskId: task.id,
         executionId,
@@ -78,8 +86,8 @@ export class CodexProvider implements AIProvider {
         sessionId: stream.threadId,
         durationMs: outcome.durationMs,
         error: {
-          code: 'PROCESS_EXIT_ERROR',
-          message: outcome.stderr.trim() || `codex exited with code ${outcome.exitCode}`,
+          code: isRateLimitText(message) ? 'PROVIDER_RATE_LIMITED' : 'PROCESS_EXIT_ERROR',
+          message,
         },
       };
     }

@@ -61,6 +61,25 @@ describe('ClaudeProvider.parseOutcome', () => {
     const result = provider.parseOutcome(outcome({ stdout: errorEvent }), task(), 'e1');
     expect(result.status).toBe('failed');
     expect(result.error?.message).toBe('something broke');
+    expect(result.error?.code).toBe('error_during_execution');
+  });
+
+  it('normalizes a rate-limit error (via api_error_status: 429) to PROVIDER_RATE_LIMITED, overriding the raw subtype', () => {
+    const errorEvent = JSON.stringify({
+      type: 'result', is_error: true, subtype: 'error_api', result: 'Overloaded, please retry later.',
+      session_id: 's1', duration_ms: 10, api_error_status: 429,
+    });
+    const result = provider.parseOutcome(outcome({ stdout: errorEvent }), task(), 'e1');
+    expect(result.error?.code).toBe('PROVIDER_RATE_LIMITED');
+  });
+
+  it('normalizes a rate-limit error detected from result text alone (no api_error_status) to PROVIDER_RATE_LIMITED', () => {
+    const errorEvent = JSON.stringify({
+      type: 'result', is_error: true, subtype: 'error_api', result: 'rate_limit_error: Number of requests exceeded.',
+      session_id: 's1', duration_ms: 10,
+    });
+    const result = provider.parseOutcome(outcome({ stdout: errorEvent }), task(), 'e1');
+    expect(result.error?.code).toBe('PROVIDER_RATE_LIMITED');
   });
 });
 
@@ -72,7 +91,7 @@ describe('CodexProvider.parseOutcome', () => {
     expect(provider.capabilities()).toContain('bugfix');
   });
 
-  it('parses the real captured error-path sample into a failed TaskResult', async () => {
+  it('parses the real captured usage-limit sample into a failed TaskResult tagged PROVIDER_RATE_LIMITED', async () => {
     const result = await provider.parseOutcome(
       outcome({ stdout: readFixture('codex-output-jsonl.jsonl'), exitCode: 1 }),
       task(),
@@ -81,6 +100,7 @@ describe('CodexProvider.parseOutcome', () => {
     );
     expect(result.status).toBe('failed');
     expect(result.error?.message).toContain('usage limit');
+    expect(result.error?.code).toBe('PROVIDER_RATE_LIMITED');
     expect(result.sessionId).toBeDefined();
   });
 
@@ -106,5 +126,18 @@ describe('CodexProvider.parseOutcome', () => {
     );
     expect(result.status).toBe('failed');
     expect(result.error?.message).toBe('crashed unexpectedly');
+    expect(result.error?.code).toBe('PROCESS_EXIT_ERROR'); // not a rate-limit signal - must not be mis-tagged
+  });
+
+  it('tags a rate-limited non-zero exit (stderr only, no JSONL error event) as PROVIDER_RATE_LIMITED', async () => {
+    const cleanStream = '{"type":"thread.started","thread_id":"abc"}';
+    const result = await provider.parseOutcome(
+      outcome({ stdout: cleanStream, exitCode: 1, stderr: 'HTTP 429 Too Many Requests' }),
+      task(),
+      'e1',
+      { file: 'codex', args: [], cwd: '.', timeoutMs: 1000 },
+    );
+    expect(result.status).toBe('failed');
+    expect(result.error?.code).toBe('PROVIDER_RATE_LIMITED');
   });
 });

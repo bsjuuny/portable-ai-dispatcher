@@ -1,4 +1,4 @@
-import type { ProviderId } from './provider.js';
+import type { ProviderId, ProviderHealthReasonCode } from './provider.js';
 
 export interface RoutingScoreComponents {
   capability: number;
@@ -18,6 +18,10 @@ export interface RoutingScore {
   components: RoutingScoreComponents;
   eligible: boolean;
   ineligibleReason?: string;
+  /** Machine-readable mirror of `ineligibleReason`, when the cause maps to a known
+   * category - lets callers (CLI --json, `doctor`) branch on why without parsing
+   * the free-text reason. */
+  ineligibleCode?: ProviderHealthReasonCode;
 }
 
 export interface RoutingDecision {

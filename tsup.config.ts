@@ -1,10 +1,9 @@
 import { defineConfig } from 'tsup';
 
-// skipNodeModulesBundle avoids two real bundling pitfalls, not a hypothetical one:
-// pino's pretty-print path dynamically resolves `pino-pretty` as a file on disk via
-// worker_threads.transport(), which breaks under esbuild inlining; execa is ESM-only
-// with its own dynamic internals. Neither is worth fighting, so dependencies stay
-// external and get installed normally alongside the built output.
+// The CLI is bundled with its JavaScript dependencies so a portable USB kit does
+// not inherit pnpm's source-tree symlinks or require a package manager. The
+// optional pino-pretty transport is not used by Dispatcher; Node built-ins stay
+// external, including node:sqlite below.
 export default defineConfig({
   entry: {
     cli: 'src/cli/index.ts',
@@ -16,7 +15,8 @@ export default defineConfig({
   dts: true,
   sourcemap: true,
   clean: true,
-  skipNodeModulesBundle: true,
+  skipNodeModulesBundle: false,
+  noExternal: ['commander', 'execa', 'js-yaml', 'pino', 'zod'],
   // esbuild has been observed to rewrite `node:sqlite` to the bare specifier
   // `sqlite` (which does not exist as an npm package) despite `platform: 'node'` -
   // explicitly listing it external, with the exact prefixed spelling, works around

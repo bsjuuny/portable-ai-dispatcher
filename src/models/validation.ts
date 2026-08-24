@@ -14,6 +14,9 @@ export interface GitDiffSummary {
   addedFiles: string[];
   deletedFiles: string[];
   protectedPathsTouched: string[];
+  /** Bounded patch supplied to reviewers that cannot inspect the filesystem. */
+  patchText?: string;
+  patchTruncated?: boolean;
 }
 
 export interface ValidationResult {

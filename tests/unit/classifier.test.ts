@@ -94,6 +94,33 @@ describe('classifyTask', () => {
     expect(classifyTask(simple).estimatedComplexity).toBe('simple');
     expect(classifyTask(complex).estimatedComplexity).toBe('complex');
   });
+
+  it('recognizes a natural-language repository-wide audit-and-fix request as complex remediation', () => {
+    const t = task({
+      command: 'fix',
+      specification: {
+        rawDescription: 'ai-dispatcher 프로젝트 확인해서 오류날 만한 부분 확인이나 더 수정해야 할 부분이 없는지 확인해줘.',
+        attachments: [],
+        sourcePaths: [],
+      },
+    });
+    const result = classifyTask(t, {
+      root: '.',
+      isGitRepo: true,
+      commands: { test: ['pnpm', 'test'] },
+      metrics: {
+        totalFiles: 151,
+        sourceFiles: 134,
+        testFiles: 49,
+        packageFiles: 1,
+        totalSourceBytes: 489_224,
+        scanTruncated: false,
+      },
+    });
+    expect(result.type).toBe('repository-remediation');
+    expect(result.scope).toBe('repository');
+    expect(result.estimatedComplexity).toBe('complex');
+  });
 });
 
 function classifyType(t: DispatcherTask): string {

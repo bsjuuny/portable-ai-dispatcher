@@ -37,7 +37,7 @@ describe('parseReviewResponse', () => {
   it('falls back to a single info finding when no valid JSON is found, rather than throwing', () => {
     const text = 'This looks fine to me, no structured output today.';
     const result = parseReviewResponse(text);
-    expect(result.verdict).toBe('approve_with_warning');
+    expect(result.verdict).toBe('request_changes');
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]!.category).toBe('review-format');
   });
@@ -45,13 +45,13 @@ describe('parseReviewResponse', () => {
   it('falls back gracefully when the fenced block contains invalid JSON', () => {
     const text = '```json\n{ this is not valid json \n```';
     const result = parseReviewResponse(text);
-    expect(result.verdict).toBe('approve_with_warning');
+    expect(result.verdict).toBe('request_changes');
   });
 
   it('falls back gracefully when the fenced block is valid JSON but does not match the schema', () => {
     const text = '```json\n{"foo": "bar"}\n```';
     const result = parseReviewResponse(text);
-    expect(result.verdict).toBe('approve_with_warning');
+    expect(result.verdict).toBe('request_changes');
     expect(result.findings[0]!.category).toBe('review-format');
   });
 });

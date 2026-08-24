@@ -17,8 +17,17 @@ export interface ProcessPlan {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs: number;
+  idleTimeoutMs?: number;
   stdinContent?: string;
   signal?: AbortSignal;
+  onActivity?: (activity: ProcessActivity) => void;
+}
+
+export interface ProcessActivity {
+  stream: 'stdout' | 'stderr';
+  bytes: number;
+  elapsedMs: number;
+  at: string;
 }
 
 export interface ProcessOutcome {
@@ -26,29 +35,100 @@ export interface ProcessOutcome {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  timeoutReason?: 'idle' | 'hard';
+  activityCount?: number;
+  lastActivityAt?: string;
+  treeTermination?: 'succeeded' | 'fallback';
+  treeTerminationMessage?: string;
   durationMs: number;
 }
 
 export async function runProcess(plan: ProcessPlan): Promise<ProcessOutcome> {
   assertArgvIsStringArray(plan.args);
   const startedAt = Date.now();
+  let hardTimer: NodeJS.Timeout | undefined;
+  let idleTimer: NodeJS.Timeout | undefined;
+  let timeoutReason: ProcessOutcome['timeoutReason'];
+  let activityCount = 0;
+  let lastActivityAt: string | undefined;
+  let treeTermination: ProcessOutcome['treeTermination'];
+  let treeTerminationMessage: string | undefined;
 
   try {
-    const result = await execa(plan.file, plan.args, {
+    const subprocess = execa(plan.file, plan.args, {
       cwd: plan.cwd,
       env: plan.env,
       shell: false,
-      timeout: plan.timeoutMs,
       input: plan.stdinContent,
       cancelSignal: plan.signal,
       reject: false,
+      // Without this, execa's timeout/cancel kill only terminates the process it
+      // directly spawned, not any further descendants - live-reproduced (2026-08-22):
+      // `codex` on Windows is an npm .cmd shim -> node -> a native worker binary, and
+      // when the worker hung on a stalled network call, killing just the direct child
+      // left the worker alive holding the inherited stdout/stderr pipes open, which
+      // kept execa's own promise waiting for EOF that would never come - the
+      // configured timeoutMs never actually ended the call, well past 2x the timeout.
+      // killDescendants uses `taskkill /T /F` on Windows / a process-group signal on
+      // Unix to reach the whole tree instead of just the immediate child.
+      killDescendants: true,
     });
+
+    const terminate = (reason: NonNullable<ProcessOutcome['timeoutReason']>): void => {
+      if (timeoutReason) return;
+      timeoutReason = reason;
+      if (idleTimer) clearTimeout(idleTimer);
+      void terminateProcessTree(subprocess.pid, () => subprocess.kill('SIGKILL')).then((result) => {
+        treeTermination = result.succeeded ? 'succeeded' : 'fallback';
+        treeTerminationMessage = result.message;
+      }).finally(() => {
+        // If a descendant inherited the pipes but tree termination failed, closing
+        // our stream handles prevents the await below from hanging forever on EOF.
+        setTimeout(() => {
+          subprocess.stdout?.destroy();
+          subprocess.stderr?.destroy();
+          subprocess.kill('SIGKILL');
+        }, 1_000).unref();
+      });
+    };
+
+    const armIdleTimer = (): void => {
+      if (!plan.idleTimeoutMs || timeoutReason) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => terminate('idle'), plan.idleTimeoutMs);
+      idleTimer.unref();
+    };
+
+    const activity = (stream: ProcessActivity['stream'], chunk: unknown): void => {
+      activityCount += 1;
+      lastActivityAt = new Date().toISOString();
+      armIdleTimer();
+      plan.onActivity?.({
+        stream,
+        bytes: Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(String(chunk)),
+        elapsedMs: Date.now() - startedAt,
+        at: lastActivityAt,
+      });
+    };
+
+    subprocess.stdout?.on('data', (chunk) => activity('stdout', chunk));
+    subprocess.stderr?.on('data', (chunk) => activity('stderr', chunk));
+    armIdleTimer();
+    hardTimer = setTimeout(() => terminate('hard'), plan.timeoutMs);
+    hardTimer.unref();
+
+    const result = await subprocess;
 
     return {
       exitCode: result.exitCode ?? null,
       stdout: result.stdout ?? '',
       stderr: result.stderr ?? '',
-      timedOut: result.timedOut ?? false,
+      timedOut: timeoutReason !== undefined || (result.timedOut ?? false),
+      timeoutReason,
+      activityCount,
+      lastActivityAt,
+      treeTermination,
+      treeTerminationMessage,
       durationMs: Date.now() - startedAt,
     };
   } catch (cause) {
@@ -67,6 +147,85 @@ export async function runProcess(plan: ProcessPlan): Promise<ProcessOutcome> {
       retryable: true,
       severity: 'error',
     });
+  } finally {
+    if (hardTimer) clearTimeout(hardTimer);
+    if (idleTimer) clearTimeout(idleTimer);
+  }
+}
+
+async function terminateProcessTree(
+  pid: number | undefined,
+  killDirect: () => boolean,
+): Promise<{ succeeded: boolean; message?: string }> {
+  if (!pid) {
+    killDirect();
+    return { succeeded: false, message: 'Spawned process did not expose a PID.' };
+  }
+
+  if (process.platform === 'win32') {
+    try {
+      const outcome = await execa('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        reject: false,
+        shell: false,
+        timeout: 5_000,
+        windowsHide: true,
+      });
+      if (outcome.exitCode === 0) return { succeeded: true };
+      const nativeResult = await terminateWindowsProcessTree(pid);
+      if (nativeResult.succeeded) return nativeResult;
+      killDirect();
+      return {
+        succeeded: false,
+        message: [
+          outcome.stderr.trim() || `taskkill exited with code ${outcome.exitCode}`,
+          nativeResult.message,
+        ].filter(Boolean).join(' Native fallback: '),
+      };
+    } catch (cause) {
+      const nativeResult = await terminateWindowsProcessTree(pid);
+      if (nativeResult.succeeded) return nativeResult;
+      killDirect();
+      return {
+        succeeded: false,
+        message: `${(cause as Error).message}. Native fallback: ${nativeResult.message ?? 'failed'}`,
+      };
+    }
+  }
+
+  killDirect();
+  return { succeeded: true };
+}
+
+async function terminateWindowsProcessTree(pid: number): Promise<{ succeeded: boolean; message?: string }> {
+  try {
+    const { getProcessList } = await import('@vscode/windows-process-tree');
+    const processes = await new Promise<Array<{ pid: number }> | undefined>((resolve) => {
+      getProcessList(pid, (list) => resolve(list));
+    });
+    if (!processes || processes.length === 0) {
+      return { succeeded: false, message: 'Windows process tree enumeration returned no processes.' };
+    }
+
+    const ordered = [
+      ...processes.filter((processInfo) => processInfo.pid !== pid),
+      ...processes.filter((processInfo) => processInfo.pid === pid),
+    ];
+    const failures: string[] = [];
+    for (const processInfo of ordered) {
+      if (processInfo.pid <= 0 || processInfo.pid === process.pid) continue;
+      try {
+        process.kill(processInfo.pid, 'SIGKILL');
+      } catch (cause) {
+        const code = (cause as NodeJS.ErrnoException).code;
+        if (code !== 'ESRCH') failures.push(`${processInfo.pid}: ${(cause as Error).message}`);
+      }
+    }
+
+    return failures.length === 0
+      ? { succeeded: true }
+      : { succeeded: false, message: failures.join('; ') };
+  } catch (cause) {
+    return { succeeded: false, message: (cause as Error).message };
   }
 }
 

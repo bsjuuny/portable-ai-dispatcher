@@ -38,6 +38,7 @@ export async function checkClaudeHealth(opts: { timeoutMs?: number } = {}): Prom
       rateLimited: null,
       ready: false,
       message: 'claude CLI not found on PATH.',
+      reasonCode: 'PROVIDER_NOT_INSTALLED',
     };
   }
 
@@ -63,6 +64,7 @@ export async function checkClaudeHealth(opts: { timeoutMs?: number } = {}): Prom
       ready: false,
       version,
       message: authOutcome?.stderr.trim() || 'claude auth status failed.',
+      reasonCode: 'PROVIDER_NOT_AUTHENTICATED',
     };
   }
 
@@ -79,6 +81,7 @@ export async function checkClaudeHealth(opts: { timeoutMs?: number } = {}): Prom
     ready: authenticated,
     version,
     message: parsed.success ? undefined : 'claude auth status returned unexpected output.',
+    reasonCode: authenticated ? undefined : 'PROVIDER_NOT_AUTHENTICATED',
   };
 }
 

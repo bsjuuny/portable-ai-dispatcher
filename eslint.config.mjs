@@ -19,7 +19,7 @@ const noSpawnImports = [
 ];
 
 export default [
-  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', '.dispatcher/**'] },
+  { ignores: ['dist/**', 'coverage/**', 'node_modules/**', '.dispatcher/**', 'portable-*/**'] },
   js.configs.recommended,
   {
     files: ['src/**/*.ts'],

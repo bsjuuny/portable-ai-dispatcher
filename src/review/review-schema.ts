@@ -20,8 +20,8 @@ export type ReviewResponse = z.infer<typeof ReviewResponseSchema>;
  * Reviewer providers are instructed to emit a fenced ```json block as the last thing
  * in their response, so review output can be parsed reliably regardless of how much
  * free-text reasoning precedes it. Falls back to treating the whole response as a
- * single "info"-severity finding if no valid JSON block is found, rather than
- * throwing away a real review because of a formatting slip.
+ * blocking review-format finding if no valid JSON block is found. Autonomous apply
+ * must fail closed when the reviewer cannot produce a machine-verifiable verdict.
  */
 export function parseReviewResponse(text: string): ReviewResponse {
   const fenced = /```json\s*([\s\S]*?)```/g;
@@ -37,10 +37,10 @@ export function parseReviewResponse(text: string): ReviewResponse {
     return ReviewResponseSchema.parse(parsed);
   } catch {
     return {
-      verdict: 'approve_with_warning',
+      verdict: 'request_changes',
       findings: [
         {
-          severity: 'info',
+          severity: 'error',
           category: 'review-format',
           message: `Reviewer response was not valid structured JSON; raw text preserved: ${text.slice(0, 500)}`,
         },

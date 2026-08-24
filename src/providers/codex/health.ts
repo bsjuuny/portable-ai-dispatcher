@@ -36,6 +36,7 @@ export async function checkCodexHealth(opts: { timeoutMs?: number } = {}): Promi
       rateLimited: null,
       ready: false,
       message: 'codex CLI not found on PATH.',
+      reasonCode: 'PROVIDER_NOT_INSTALLED',
     };
   }
 
@@ -71,5 +72,8 @@ export async function checkCodexHealth(opts: { timeoutMs?: number } = {}): Promi
       : configBroken
         ? `codex CLI config error (see ~/.codex/config.toml): ${stderr}`
         : stderr || stdout || 'codex login status did not report as logged in.',
+    // configBroken is a CLI/config problem, not really an auth problem - leave it
+    // uncategorized rather than mislabeling it as PROVIDER_NOT_AUTHENTICATED.
+    reasonCode: authenticated || configBroken ? undefined : 'PROVIDER_NOT_AUTHENTICATED',
   };
 }

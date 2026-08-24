@@ -12,10 +12,17 @@ function task(): DispatcherTask {
 
 describe('buildReviewPrompt', () => {
   it('includes the original task description and changed files', () => {
-    const prompt = buildReviewPrompt(task(), { changedFiles: ['src/a.ts', 'src/b.ts'], addedFiles: [], deletedFiles: [], protectedPathsTouched: [] });
+    const prompt = buildReviewPrompt(task(), {
+      changedFiles: ['src/a.ts', 'src/b.ts'],
+      addedFiles: [],
+      deletedFiles: [],
+      protectedPathsTouched: [],
+      patchText: 'diff --git a/src/a.ts b/src/a.ts\n+const fixed = true;',
+    });
     expect(prompt).toContain('로그인 오류 수정');
     expect(prompt).toContain('src/a.ts');
     expect(prompt).toContain('src/b.ts');
+    expect(prompt).toContain('+const fixed = true;');
   });
 
   it('always requests a fenced json block in a fixed shape', () => {
@@ -43,6 +50,67 @@ describe('runReview', () => {
     expect(result.verdict).toBe('approve');
     expect(result.independentReview).toBe(true);
     expect(result.reviewer).toBe('claude');
+  });
+
+  it('treats a reviewer that fails to execute as a blocking "critical" verdict, not approve_with_warning', async () => {
+    // Regression test for a real incident (2026-08-22): the installed Codex CLI
+    // couldn't run at all (unsupported model), so result.text was empty - before this
+    // fix, that fell into parseReviewResponse('')'s "assume it's just unparseable
+    // text" fallback and silently reported approve_with_warning, exactly as if the
+    // reviewer had actually run and only slipped on formatting.
+    const result = await runReview({
+      task: task(),
+      implementer: 'claude',
+      reviewer: 'codex',
+      independentReview: true,
+      diff: { changedFiles: ['a.ts'], addedFiles: [], deletedFiles: [], protectedPathsTouched: [] },
+      cycle: 1,
+      dispatchReview: async () => ({
+        taskId: 't1',
+        executionId: 'e1',
+        provider: 'codex',
+        status: 'failed',
+        durationMs: 10,
+        error: { code: 'PROVIDER_TASK_FAILED', message: "The 'gpt-5.6-sol' model requires a newer version of Codex." },
+      }),
+    });
+    expect(result.verdict).toBe('critical');
+    expect(hasBlockingFindings(result)).toBe(true);
+    expect(result.findings[0]?.category).toBe('review-execution-failed');
+    expect(result.findings[0]?.message).toContain('gpt-5.6-sol');
+  });
+
+  it('fails closed when a successful reviewer dispatch returns an unparseable body', async () => {
+    const result = await runReview({
+      task: task(),
+      implementer: 'codex',
+      reviewer: 'claude',
+      independentReview: true,
+      diff: { changedFiles: [], addedFiles: [], deletedFiles: [], protectedPathsTouched: [] },
+      cycle: 1,
+      dispatchReview: async () => ({
+        taskId: 't1', executionId: 'e1', provider: 'claude', status: 'success', durationMs: 10,
+        text: 'just some prose, no fenced json block',
+      }),
+    });
+    expect(result.verdict).toBe('request_changes');
+    expect(result.findings[0]?.category).toBe('review-format');
+  });
+
+  it('treats a timed-out reviewer dispatch the same as any other execution failure', async () => {
+    const result = await runReview({
+      task: task(),
+      implementer: 'claude',
+      reviewer: 'codex',
+      independentReview: true,
+      diff: { changedFiles: [], addedFiles: [], deletedFiles: [], protectedPathsTouched: [] },
+      cycle: 1,
+      dispatchReview: async () => ({
+        taskId: 't1', executionId: 'e1', provider: 'codex', status: 'timeout', durationMs: 10,
+      }),
+    });
+    expect(result.verdict).toBe('critical');
+    expect(hasBlockingFindings(result)).toBe(true);
   });
 });
 

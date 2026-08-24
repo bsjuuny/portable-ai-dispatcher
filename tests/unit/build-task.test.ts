@@ -88,6 +88,33 @@ describe('buildTaskFromCli', () => {
     expect(task.metadata?.['explicitProvider']).toBe('codex');
   });
 
+  it('throws INVALID_WORKING_DIRECTORY when --cwd points at a nonexistent path', async () => {
+    const missing = join(dir, 'does-not-exist');
+    await expect(buildTaskFromCli('fix', 'hello', { cwd: missing, stdin: false })).rejects.toSatisfy(
+      (error: unknown) => isDispatcherError(error) && error.code === 'INVALID_WORKING_DIRECTORY',
+    );
+  });
+
+  it('throws INVALID_WORKING_DIRECTORY when --cwd points at a file, not a directory', async () => {
+    const filePath = join(dir, 'not-a-directory.txt');
+    await writeFile(filePath, 'x', 'utf8');
+    await expect(buildTaskFromCli('fix', 'hello', { cwd: filePath, stdin: false })).rejects.toSatisfy(
+      (error: unknown) => isDispatcherError(error) && error.code === 'INVALID_WORKING_DIRECTORY',
+    );
+  });
+
+  it('throws TASK_INPUT_TOO_LARGE when the description exceeds the configured limit', async () => {
+    const huge = 'x'.repeat(1000);
+    await expect(
+      buildTaskFromCli('fix', huge, { cwd: dir, stdin: false }, { maxTaskInputBytes: 100 }),
+    ).rejects.toSatisfy((error: unknown) => isDispatcherError(error) && error.code === 'TASK_INPUT_TOO_LARGE');
+  });
+
+  it('allows input at or under the configured limit', async () => {
+    const task = await buildTaskFromCli('fix', 'short', { cwd: dir, stdin: false }, { maxTaskInputBytes: 1000 });
+    expect(task.specification.rawDescription).toBe('short');
+  });
+
   it('rejects a --file path that escapes the working directory (path traversal)', async () => {
     const outside = await mkdtemp(join(tmpdir(), 'ai-dispatcher-outside-'));
     await writeFile(join(outside, 'secret.txt'), 'nope', 'utf8');

@@ -8,6 +8,7 @@ import type { AIProvider, ProviderCommandPlan, ProviderRunOptions } from '../typ
 import { buildClaudeCommand } from './command-builder.js';
 import { checkClaudeHealth } from './health.js';
 import { parseClaudeStreamJsonOutput } from './output-schema.js';
+import { isRateLimitStatus, isRateLimitText } from '../rate-limit-detection.js';
 
 const CAPABILITIES: ProviderCapability[] = [
   'repository-analysis',
@@ -44,7 +45,10 @@ export class ClaudeProvider implements AIProvider {
         provider: this.id,
         status: 'timeout',
         durationMs: outcome.durationMs,
-        error: { code: 'PROCESS_TIMEOUT', message: 'Claude execution timed out.' },
+        error: {
+          code: 'PROCESS_TIMEOUT',
+          message: `Claude execution timed out (${outcome.timeoutReason ?? 'hard'} timeout).`,
+        },
       };
     }
 
@@ -75,6 +79,8 @@ export class ClaudeProvider implements AIProvider {
     }
 
     if (event.is_error) {
+      const rateLimited =
+        isRateLimitStatus(event.api_error_status) || isRateLimitText(event.result, event.subtype, event.api_error_status);
       return {
         taskId: task.id,
         executionId,
@@ -83,7 +89,10 @@ export class ClaudeProvider implements AIProvider {
         text: event.result,
         sessionId: event.session_id,
         durationMs: outcome.durationMs,
-        error: { code: event.subtype, message: event.result ?? 'Claude reported an error.' },
+        error: {
+          code: rateLimited ? 'PROVIDER_RATE_LIMITED' : event.subtype,
+          message: event.result ?? 'Claude reported an error.',
+        },
         rawOutputPath: undefined,
       };
     }

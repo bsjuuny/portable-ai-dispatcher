@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 // "looks sensitive" heuristic, to keep false positives low while catching the
 // categories spec section 73 explicitly names.
 const SECRET_PATTERNS: RegExp[] = [
+  /Authorization:\s*Bearer\s+\S+/gi,
   /AKIA[0-9A-Z]{16}/g, // AWS access key id
   // OpenAI/Anthropic-style API key. Anthropic keys have hyphenated segments
   // (sk-ant-api03-...), so the body allows `-`/`_`, not just alphanumerics.

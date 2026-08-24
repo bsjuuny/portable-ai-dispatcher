@@ -1,2 +1,3 @@
 allowBuilds:
+  '@vscode/windows-process-tree': true
   esbuild: true

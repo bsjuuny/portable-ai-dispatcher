@@ -11,6 +11,7 @@ export interface RouteOptions {
   classification: TaskClassification;
   forcedProvider?: ProviderId;
   weights?: RoutingWeights;
+  isProviderAvailable?: (provider: ProviderId) => boolean;
 }
 
 export async function selectProvider(
@@ -22,16 +23,35 @@ export async function selectProvider(
     ? [registry.get(options.forcedProvider)]
     : registry.list();
 
+  if (providers.length === 0) {
+    throw new DispatcherError({
+      code: 'NO_AVAILABLE_PROVIDER',
+      message:
+        'No providers are registered. Enable a cloud provider or configure a local profile whose loopback runtime is enabled.',
+      taskId: options.taskId,
+      retryable: false,
+    });
+  }
+
   const scores = await Promise.all(
     providers.map(async (provider) => {
       const [health, usage1h] = await Promise.all([
         provider.checkHealth(),
         usageTracker.usageFor(provider.id, '1h'),
       ]);
-      return scoreProvider(
+      const score = scoreProvider(
         { provider, health, usage1h, classification: options.classification },
         options.weights ?? DEFAULT_ROUTING_WEIGHTS,
       );
+      if (score.eligible && options.isProviderAvailable && !options.isProviderAvailable(provider.id)) {
+        return {
+          ...score,
+          total: -Infinity,
+          eligible: false,
+          ineligibleReason: 'Provider circuit breaker is open.',
+        };
+      }
+      return score;
     }),
   );
 

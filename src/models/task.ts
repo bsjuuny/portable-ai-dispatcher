@@ -32,6 +32,21 @@ export interface TaskSpecification {
   sourcePaths: string[];
 }
 
+export interface PlannedWorkUnit {
+  id: string;
+  objective: string;
+  owner: 'provider' | 'dispatcher';
+  dependsOn: string[];
+}
+
+export interface TaskExecutionPlan {
+  intent: string;
+  scope: 'targeted' | 'module' | 'repository';
+  complexity: 'simple' | 'normal' | 'complex';
+  workUnits: PlannedWorkUnit[];
+  createdAt: string;
+}
+
 export type TaskStatus =
   | 'created'
   | 'classifying'
@@ -54,6 +69,7 @@ export interface DispatcherTask {
   timeoutMs?: number;
   metadata?: Record<string, unknown>;
   classification?: TaskClassification;
+  executionPlan?: TaskExecutionPlan;
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;

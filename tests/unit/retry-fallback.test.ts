@@ -105,6 +105,22 @@ describe('CircuitBreaker', () => {
     expect(cb.stateOf('claude')).toBe('open');
     expect(cb.stateOf('codex')).toBe('closed');
   });
+
+  it('tripOpen forces the circuit open on a single call, bypassing the sliding-window threshold', () => {
+    // A confirmed rate-limit response is 100% certain the provider is unusable
+    // right now - unlike recordFailure, this must not wait for sampleSize calls.
+    const cb = new CircuitBreaker({ failureThreshold: 4, sampleSize: 5, cooldownMs: 60_000 });
+    expect(cb.stateOf('codex')).toBe('closed');
+    cb.tripOpen('codex');
+    expect(cb.stateOf('codex')).toBe('open');
+    expect(cb.canAttempt('codex')).toBe(false);
+  });
+
+  it('tripOpen respects the same cooldown as a threshold-triggered open', () => {
+    const cb = new CircuitBreaker({ failureThreshold: 4, sampleSize: 5, cooldownMs: 1000 });
+    cb.tripOpen('codex', Date.now() - 2000);
+    expect(cb.canAttempt('codex')).toBe(true); // cooldown elapsed -> half_open trial allowed
+  });
 });
 
 function fakeDecision(): RoutingDecision {

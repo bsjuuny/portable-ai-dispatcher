@@ -48,6 +48,17 @@ describe('scoreProvider', () => {
     });
     expect(result.eligible).toBe(false);
     expect(result.ineligibleReason).toBe('Provider is rate limited.');
+    expect(result.ineligibleCode).toBe('PROVIDER_RATE_LIMITED');
+  });
+
+  it('propagates the health check\'s reasonCode as ineligibleCode when not ready', () => {
+    const result = scoreProvider({
+      provider: fakeProvider('claude', ['bugfix']),
+      health: health({ ready: false, message: 'claude CLI not found on PATH.', reasonCode: 'PROVIDER_NOT_INSTALLED' }),
+      usage1h: usage(),
+      classification: classification(['bugfix']),
+    });
+    expect(result.ineligibleCode).toBe('PROVIDER_NOT_INSTALLED');
   });
 
   it('gives full capability score when all required capabilities are matched', () => {
@@ -68,6 +79,23 @@ describe('scoreProvider', () => {
       classification: classification(['bugfix', 'implementation']),
     });
     expect(result.components.capability).toBe(0);
+    expect(result.eligible).toBe(true);
+  });
+
+  it('makes a local analysis-only provider ineligible for an implementation task', () => {
+    const provider = {
+      ...fakeProvider('claude', ['analysis', 'review']),
+      id: 'local-fast' as const,
+      dataResidency: 'local' as const,
+    };
+    const result = scoreProvider({
+      provider,
+      health: { ...health(), provider: 'local-fast' },
+      usage1h: { ...usage(), provider: 'local-fast' },
+      classification: classification(['bugfix', 'implementation']),
+    });
+    expect(result.eligible).toBe(false);
+    expect(result.total).toBe(-Infinity);
   });
 
   it('penalizes recent failures within the small-sample lookback window', () => {
