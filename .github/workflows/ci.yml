@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm test
+      - name: Validate generated macOS portable shell scripts
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          target="$RUNNER_TEMP/portable-ai-dispatcher"
+          node dist/cli.js portable assemble "$target" --target macos-arm64 --without-assets
+          for script in "$target"/bin/*; do sh -n "$script"; done
+          test -f "$target/kit-lock.json"
+          grep -q 'local start' "$target/bin/start-local"
+          ! grep -q '25769803776' "$target/bin/start-local"
+          node dist/cli.js portable seal "$target" --json
+          test_home="$RUNNER_TEMP/portable-home"
+          mkdir -p "$test_home/.local/bin"
+          printf 'owned-by-user\n' > "$test_home/.local/bin/ai-dispatcher"
+          if HOME="$test_home" "$target/bin/install-command"; then exit 1; fi
+          grep -q 'owned-by-user' "$test_home/.local/bin/ai-dispatcher"
+          rm "$test_home/.local/bin/ai-dispatcher"
+          HOME="$test_home" "$target/bin/install-command"
+          test "$(readlink "$test_home/.local/bin/ai-dispatcher")" = "$target/bin/ai-dispatcher"
+          ln -sfn /usr/bin/true "$test_home/.local/bin/ai-dispatcher"
+          if HOME="$test_home" "$target/bin/uninstall-command"; then exit 1; fi
+          test "$(readlink "$test_home/.local/bin/ai-dispatcher")" = /usr/bin/true

@@ -86,6 +86,54 @@ export class LocalProvider implements AIProvider {
 
   async checkHealth(opts: { timeoutMs?: number } = {}): Promise<ProviderHealth> {
     const status = await this.runtime.detect(this.host, opts);
+    if (!status.reachable) {
+      return {
+        provider: this.id,
+        checkedAt: status.checkedAt,
+        installed: false,
+        authenticated: true,
+        reachable: false,
+        rateLimited: false,
+        ready: false,
+        version: status.version,
+        message: status.message,
+        reasonCode: 'PROVIDER_UNREACHABLE',
+      };
+    }
+
+    try {
+      const models = await this.runtime.listModels(this.host, opts);
+      const expected = normalizeModelName(this.profile.model);
+      const loaded = models.some((model) => normalizeModelName(model.name) === expected);
+      if (!loaded) {
+        return {
+          provider: this.id,
+          checkedAt: status.checkedAt,
+          installed: true,
+          authenticated: true,
+          reachable: true,
+          rateLimited: false,
+          ready: false,
+          version: status.version,
+          message: `Runtime is reachable, but configured model '${this.profile.model}' is not loaded. Available: ${models.map((model) => model.name).join(', ') || '(none)'}.`,
+          reasonCode: 'LOCAL_MODEL_NOT_FOUND',
+        };
+      }
+    } catch (cause) {
+      return {
+        provider: this.id,
+        checkedAt: status.checkedAt,
+        installed: true,
+        authenticated: true,
+        reachable: true,
+        rateLimited: false,
+        ready: false,
+        version: status.version,
+        message: `Runtime model inventory failed: ${(cause as Error).message}`,
+        reasonCode: 'PROVIDER_UNREACHABLE',
+      };
+    }
+
     return {
       provider: this.id,
       checkedAt: status.checkedAt,
@@ -96,7 +144,6 @@ export class LocalProvider implements AIProvider {
       ready: status.reachable,
       version: status.version,
       message: status.message,
-      reasonCode: status.reachable ? undefined : 'PROVIDER_UNREACHABLE',
     };
   }
 
@@ -213,6 +260,10 @@ export class LocalProvider implements AIProvider {
       },
     };
   }
+}
+
+function normalizeModelName(value: string): string {
+  return value.trim().toLowerCase().replace(/:latest$/, '');
 }
 
 function isCodeChangingTask(task: DispatcherTask): boolean {

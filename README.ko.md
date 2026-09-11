@@ -91,10 +91,12 @@ ai-dispatcher explain <taskId>         # 왜 이 provider가 선택됐는지, �
 ai-dispatcher local status [--json]    # 런타임 도달성 + 설정된 local.profiles[] 헬스
 ai-dispatcher local runtimes [--json]  # 로컬 런타임 도달성 (profile 설정과 무관)
 ai-dispatcher local models [--json]    # 도달 가능한 런타임별 실제 설치된 모델 목록
+ai-dispatcher local start              # manifest에서 선택한 llama.cpp 런타임과 모델 실행
 ai-dispatcher preflight [--json]       # CPU/GPU 프로필과 오프라인 런타임·모델 팩 준비 상태
 ai-dispatcher local benchmark [name]   # 설정된 로컬 모델 성능 측정 및 처리량 캐시 저장
 ai-dispatcher local import-pack <dir>  # 사전 다운로드한 모델 팩을 검증 후 복사
 ai-dispatcher portable assemble <dir>  # USB용 오프라인 포터블 키트 생성
+ai-dispatcher portable seal <dir>      # 자산 변경 후 검토된 키트 무결성 잠금 재생성
 ```
 
 디스패치 명령(`ask`/`analyze`/`review`/`fix`/`implement`)이 실행되는 동안, provider 선택·각 실행 시도 시작/종료·retry·fallback·검증·리뷰 같은 실시간 상태가 **stderr**로 그때그때 출력됩니다(stdout이 아니라서 `--json`의 기계 판독용 출력은 영향받지 않습니다). 실행 하나가 오래 걸리면 30초마다 "아직 `<provider>` 대기 중 (`Ns` 경과)" 하트비트도 함께 나옵니다. 예전에는 작업 전체가 끝날 때까지 터미널에 아무것도 안 찍혀서, 몇 분씩 걸리는 실행 중에 "정상 진행 중"과 "멈춤"을 구분할 방법이 없었습니다 — 실제로(2026-08-22) 11분 동안 아무 출력도 없이 멈춰있던 걸 겪고 나서 추가했습니다. 마지막에 사람이 읽기 좋은(또는 `--json`) 요약은 기존과 동일하게 출력됩니다.
@@ -200,7 +202,7 @@ local:
 
 ### CPU 우선 오프라인 모델 팩
 
-CPU는 GPU 탐지 실패 시의 차선책이 아니라 기본 실행 경로입니다. `ai-dispatcher preflight`는 가능한 범위에서 하드웨어 프로필을 만들고 `CPU_LITE`·`CPU_STANDARD`·`CPU_PLUS`·`GPU_STANDARD`·`AI_WORKSTATION`을 정한 뒤 CUDA → Vulkan → CPU 순서로 런타임을 고릅니다. ISA가 명확히 확인되지 않으면 AVX/AVX2 전용 바이너리는 고르지 않고 일반 CPU 바이너리만 허용하므로, 알 수 없는 장비에서 Illegal Instruction이 나는 일을 막습니다.
+CPU는 GPU 탐지 실패 시의 차선책이 아니라 기본 실행 경로입니다. `ai-dispatcher preflight`는 가능한 범위에서 하드웨어 프로필을 만들고 `CPU_LITE`·`CPU_STANDARD`·`CPU_PLUS`·`GPU_STANDARD`·`AI_WORKSTATION`을 정한 뒤 Metal → CUDA → Vulkan → CPU 순서로 런타임을 고릅니다. Apple Silicon은 통합 메모리를 공유하는 Metal 장치로 감지합니다. ISA가 명확히 확인되지 않으면 AVX/AVX2 전용 바이너리는 고르지 않고 일반 CPU 바이너리만 허용하므로, 알 수 없는 장비에서 Illegal Instruction이 나는 일을 막습니다.
 
 ```text
 runtime/
@@ -226,9 +228,9 @@ GPU/NPU 탐지는 선택 사항입니다. 감사된 설치 도구가 `AI_DISPATC
 
 ### USB 포터블 키트
 
-빌드 후 `ai-dispatcher portable assemble <folder>`를 실행하면 USB로 복사할 단일 폴더를 만듭니다. 현재 Node.js 22+ 실행 파일·JavaScript 의존성이 `dist`에 포함된 빌드 앱·포터블 설정·실행 스크립트와 기존 `runtime/`·`models/` 폴더를 함께 복사하며, 어떠한 자산도 다운로드하지 않습니다.
+빌드 후 `ai-dispatcher portable assemble <folder>`를 실행하면 외장 드라이브로 복사할 단일 폴더를 만듭니다. 지원되는 호스트에서는 대상이 자동 선택되며, `--target windows-x64` 또는 `--target macos-arm64`로 명시할 수도 있습니다. `dist`에 포함된 빌드 앱·포터블 설정·대상별 실행 스크립트와 준비된 오프라인 자산을 복사하며, 어떠한 자산도 다운로드하지 않고 다른 운영체제의 실행 파일을 잘못 복사하지도 않습니다.
 
-실행 전 복사된 `runtime/node/node.exe`가 Node.js 22+인지 확인하고, `runtime/`에는 검토한 generic CPU 런타임과 `runtime-manifest.json`을, `models/`에는 검증된 모델 팩을 넣어야 합니다. 이후 `bin/preflight.cmd`가 `READY`인지 확인하세요. 런처는 다른 프로젝트 폴더에서 실행하더라도 USB를 자산 루트로 유지하고, 프로젝트의 `.dispatcher/` 기록은 해당 프로젝트에 남깁니다.
+Windows 대상은 `runtime/node/node.exe`, MinGit, `.cmd` 런처와 Windows llama.cpp 런타임을 사용합니다. Apple Silicon 대상은 `runtime/node/bin/node`, relocatable Git, POSIX 런처와 macOS ARM64 Metal llama.cpp를 사용합니다. Mac 자산은 생성 전 `runtime/macos-arm64/`, Mac 전용 템플릿은 `templates/macos-arm64/`에 준비합니다. 생성 후 자산을 채우거나 교체했다면 키트 루트에서 `bin/ai-dispatcher portable seal .`로 무결성 잠금을 갱신한 뒤 `bin/preflight`가 `READY`인지 확인하세요. `start-local`은 별도 임계값 대신 이 preflight의 launch plan을 그대로 사용합니다. 자세한 내용은 [macOS portable 가이드](docs/PORTABLE-KIT-GUIDE.macos.ko.md)를 참고하세요. 런처는 외장 드라이브를 자산 루트로 유지하고 프로젝트의 `.dispatcher/` 기록은 해당 프로젝트에 남깁니다.
 
 ### 폐쇄망 배포
 
@@ -306,10 +308,13 @@ safety:
     refactor:       { maxFiles: 50, maxChangedLines: 2000 }
   autoApply:
     enabled: false          # 기본값은 꺼짐 - 아래 설명 꼭 읽으세요
+    requireIndependentReview: false # true면 자가 리뷰 변경은 자동 반영하지 않음
     maxRiskLevel: MEDIUM    # CRITICAL은 절대 auto-apply 대상이 아니며, 이를 우회할 방법은 없음
 ```
 
 **적용하기 전에 꼭 읽으세요**: `safety.autoApply.enabled`의 기본값은 **`false`**입니다. 즉 별다른 설정 없이는, 검증도 통과하고 리뷰도 승인한 — 완전히 성공한 — `fix`/`implement` 작업이 이제 `SUCCESS` 대신 **`BLOCKED_BY_POLICY`**를 보고하고, *레포지토리에 아무것도 반영되지 않습니다*. 이전에는 `safety.autoApply`라는 키 자체가 없었으니 이건 실질적인 동작 변화입니다. 의도된 것입니다: 이 기능 전체의 목적이 안전을 기본값으로 하는 완전자동 운영인데, 업그레이드하는 순간부터 AI 변경사항을 조용히 자동 커밋하기 시작하는 시스템이라면 그 목적에 정반대가 됩니다. 위의 risk/blast-radius 임계값을 검토하고 자신의 threat model에 맞는다고 판단했다면 `safety.autoApply.enabled: true`로 설정하세요. `ai-dispatcher fix "..." --dry-run`과 처음 몇 번의 `BLOCKED_BY_POLICY` 실행 결과(`ai-dispatcher explain <taskId>` / `ai-dispatcher inspect <taskId>`로 확인)를 보는 게 실제로 켜기 전에 *무엇이* 적용됐을지 미리 확인하는 방법입니다.
+
+자동 반영이 구현 모델의 자가 리뷰에 의존해서는 안 된다면 `requireIndependentReview: true`로 설정하세요. 준비된 provider가 하나뿐일 때도 진단을 위한 자가 리뷰는 끝까지 수행하지만, gate는 `independentReview: false`를 기록하고 `BLOCKED_BY_POLICY`로 종료하며 실제 작업 트리는 변경하지 않습니다. 포터블 키트는 이 엄격한 정책을 기본으로 켜므로, 무인 자동 반영을 사용하려면 실제로 분리된 reviewer provider를 추가로 준비해야 합니다.
 
 `workspaceIsolation.enabled: false`는 이 기능이 생기기 전 모든 `fix`/`implement` 작업이 갖고 있던 직접 실행 동작으로의 말 그대로의 opt-out입니다: worktree도, repository lock도, risk gate도 없이, provider가 끝나는 즉시 이전과 똑같이 변경이 반영됩니다.
 
@@ -385,6 +390,7 @@ safety:
     refactor: { maxFiles: 50, maxChangedLines: 2000 }
   autoApply:
     enabled: false
+    requireIndependentReview: false
     maxRiskLevel: MEDIUM
 local:
   runtimes:

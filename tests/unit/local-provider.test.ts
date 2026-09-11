@@ -12,6 +12,7 @@ class FakeRuntimeAdapter implements LocalRuntimeAdapter {
   constructor(
     private readonly detectResult: LocalRuntimeStatus,
     private readonly generateResult: LocalGenerationResult | (() => never) = { text: 'a response', raw: {}, durationMs: 5, thinkingStripped: false },
+    private readonly models: LocalModelInfo[] = [{ runtime: 'ollama', name: 'qwen3:4b' }],
   ) {}
 
   async detect(): Promise<LocalRuntimeStatus> {
@@ -19,7 +20,7 @@ class FakeRuntimeAdapter implements LocalRuntimeAdapter {
   }
 
   async listModels(): Promise<LocalModelInfo[]> {
-    return [];
+    return this.models;
   }
 
   async generate(request: LocalGenerationRequest): Promise<LocalGenerationResult> {
@@ -109,6 +110,36 @@ describe('LocalProvider', () => {
     expect(health.ready).toBe(false);
     expect(health.reachable).toBe(false);
     expect(health.message).toBe('connection refused');
+  });
+
+  it('checkHealth reports not-ready when the configured model is not loaded', async () => {
+    const provider = new LocalProvider(
+      { name: 'heavy', runtime: 'ollama', model: 'qwen3:8b' },
+      new FakeRuntimeAdapter(
+        { runtime: 'ollama', host: 'x', reachable: true, checkedAt: 'now' },
+        { text: '', raw: {}, durationMs: 0, thinkingStripped: false },
+        [{ runtime: 'ollama', name: 'qwen3:4b' }],
+      ),
+      'http://127.0.0.1:11434',
+    );
+
+    const health = await provider.checkHealth();
+    expect(health).toMatchObject({ ready: false, reachable: true, reasonCode: 'LOCAL_MODEL_NOT_FOUND' });
+    expect(health.message).toContain('qwen3:8b');
+  });
+
+  it('treats an omitted :latest tag as the same loaded model', async () => {
+    const provider = new LocalProvider(
+      { name: 'fast', runtime: 'ollama', model: 'qwen3' },
+      new FakeRuntimeAdapter(
+        { runtime: 'ollama', host: 'x', reachable: true, checkedAt: 'now' },
+        { text: '', raw: {}, durationMs: 0, thinkingStripped: false },
+        [{ runtime: 'ollama', name: 'qwen3:latest' }],
+      ),
+      'http://127.0.0.1:11434',
+    );
+
+    await expect(provider.checkHealth()).resolves.toMatchObject({ ready: true });
   });
 
   it('buildCommand throws INTERNAL_LOGIC_ERROR - LocalProvider is executeDirect-only', () => {

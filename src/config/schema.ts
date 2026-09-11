@@ -204,6 +204,7 @@ const BlastRadiusSchema = z.object({
 const AutoApplySchema = z.object({
   enabled: z.boolean().default(false),
   maxRiskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH']).default('MEDIUM'),
+  requireIndependentReview: z.boolean().default(false),
 });
 
 const SafetySchema = z.object({

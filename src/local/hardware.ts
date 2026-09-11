@@ -65,10 +65,13 @@ export function buildHardwareProfile(input: HardwareProbeInput = {}): HardwarePr
  */
 export function detectHardwareProfile(root = process.cwd()): HardwareProfile {
   const osName = normalizeOs(platform());
+  const architecture = normalizeArch(arch());
   const cpuInfo = cpus();
   const warnings: string[] = [];
   const instructionSets = detectInstructionSets(osName, warnings);
-  const gpu = detectGpuFromEnvironment(warnings);
+  const gpu = detectGpuFromEnvironment()
+    ?? detectAppleSiliconGpu(osName, architecture);
+  if (!gpu) warnings.push('GPU detection is unavailable without an optional platform probe; CPU remains selected.');
   let diskAvailableBytes: number | undefined;
   try {
     const fs = statfsSync(resolve(root));
@@ -79,7 +82,7 @@ export function detectHardwareProfile(root = process.cwd()): HardwareProfile {
 
   return buildHardwareProfile({
     os: osName,
-    arch: arch(),
+    arch: architecture,
     cpuModel: cpuInfo[0]?.model?.trim() || process.env['PROCESSOR_IDENTIFIER'],
     cores: cpuInfo.length || undefined,
     threads: safeAvailableParallelism(),
@@ -141,6 +144,7 @@ export function effectiveCpuThreads(profile: HardwareProfile, policy: { maxThrea
 function detectInstructionSets(osName: string, warnings: string[]): string[] {
   const override = process.env['AI_DISPATCHER_CPU_ISA'];
   if (override) return normalizeInstructionSets(override.split(','));
+  if (osName === 'darwin' && arch() === 'arm64') return ['NEON'];
   if (osName !== 'linux') {
     warnings.push('CPU ISA could not be determined without a deployment-provided probe; only generic CPU runtimes are safe to select.');
     return [];
@@ -160,7 +164,7 @@ function detectInstructionSets(osName: string, warnings: string[]): string[] {
   }
 }
 
-function detectGpuFromEnvironment(warnings: string[]): { gpu: NonNullable<HardwareProfile['gpu']>; integratedGpu: boolean } | undefined {
+function detectGpuFromEnvironment(): { gpu: NonNullable<HardwareProfile['gpu']>; integratedGpu: boolean } | undefined {
   // Offline bundles may populate these during installation from an audited native
   // probe. They are optional hints; actual CUDA/Vulkan use still requires a runtime
   // qualification benchmark, so a spoofed value cannot force GPU-only execution.
@@ -168,14 +172,24 @@ function detectGpuFromEnvironment(warnings: string[]): { gpu: NonNullable<Hardwa
   const model = process.env['AI_DISPATCHER_GPU_MODEL'];
   const memoryBytes = parsePositiveInteger(process.env['AI_DISPATCHER_GPU_MEMORY_BYTES']);
   const backends = normalizeBackends(process.env['AI_DISPATCHER_GPU_BACKENDS']);
-  if (!vendor && !model && !memoryBytes && backends.length === 0) {
-    warnings.push('GPU detection is unavailable without an optional platform probe; CPU remains selected.');
-    return undefined;
-  }
+  if (!vendor && !model && !memoryBytes && backends.length === 0) return undefined;
   const normalizedVendor = vendor?.trim();
   return {
     gpu: { vendor: normalizedVendor, model: model?.trim(), memoryBytes, backends },
     integratedGpu: /intel|amd.*integrated|radeon graphics/i.test(`${normalizedVendor ?? ''} ${model ?? ''}`),
+  };
+}
+
+function detectAppleSiliconGpu(osName: string, architecture: string): { gpu: NonNullable<HardwareProfile['gpu']>; integratedGpu: boolean } | undefined {
+  if (osName !== 'darwin' || architecture !== 'arm64') return undefined;
+  return {
+    gpu: {
+      vendor: 'Apple',
+      model: cpus()[0]?.model?.trim() || 'Apple Silicon',
+      memoryBytes: totalmem(),
+      backends: ['metal'],
+    },
+    integratedGpu: true,
   };
 }
 
@@ -186,7 +200,7 @@ function normalizeInstructionSets(values: string[]): string[] {
 }
 
 function normalizeBackends(raw: string | undefined): AccelerationBackend[] {
-  const allowed: AccelerationBackend[] = ['cuda', 'vulkan', 'cpu', 'npu'];
+  const allowed: AccelerationBackend[] = ['cuda', 'vulkan', 'metal', 'cpu', 'npu'];
   const values = raw?.split(',').map((value) => value.trim().toLowerCase()) ?? [];
   return allowed.filter((value) => values.includes(value));
 }

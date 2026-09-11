@@ -60,6 +60,25 @@ describe('offline model packs', () => {
     expect(result.code).toBe('CPU_INSTRUCTION_SET_UNSUPPORTED');
   });
 
+  it('prefers a Metal artifact on Apple Silicon and rejects it without a Metal backend', () => {
+    const artifact = {
+      schemaVersion: '1' as const,
+      runtimeId: 'llamacpp-metal-macos-arm64',
+      acceleration: 'metal' as const,
+      os: 'darwin',
+      arch: 'arm64',
+      executable: 'bin/llama-server',
+    };
+    const apple = buildHardwareProfile({
+      os: 'darwin', arch: 'arm64', totalMemoryBytes: 32 * GB, availableMemoryBytes: 24 * GB,
+      gpu: { vendor: 'Apple', model: 'Apple M-series', memoryBytes: 32 * GB, backends: ['metal'] }, integratedGpu: true,
+    });
+    const cpuOnly = buildHardwareProfile({ os: 'darwin', arch: 'arm64', totalMemoryBytes: 32 * GB, availableMemoryBytes: 24 * GB });
+
+    expect(selectRuntimeArtifact(apple, [artifact]).selected?.runtimeId).toBe('llamacpp-metal-macos-arm64');
+    expect(selectRuntimeArtifact(cpuOnly, [artifact]).selected).toBeUndefined();
+  });
+
   it('imports a pre-downloaded pack only after digest verification, with no downloader', () => {
     const root = tempRoot();
     const source = join(root, 'source');

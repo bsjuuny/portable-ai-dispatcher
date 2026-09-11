@@ -80,7 +80,7 @@ describe('config schema', () => {
         protectedPaths: [],
         workspaceIsolation: { enabled: false },
         blastRadius: { bugfix: { maxFiles: 1, maxChangedLines: 1 } },
-        autoApply: { enabled: true, maxRiskLevel: 'HIGH' },
+        autoApply: { enabled: true, maxRiskLevel: 'HIGH', requireIndependentReview: true },
       },
       local: {
         runtimes: { ollama: { enabled: false, host: 'http://127.0.0.1:1' }, llamacpp: { enabled: true, host: 'http://127.0.0.1:2' } },
@@ -107,6 +107,7 @@ describe('config schema', () => {
     const config = parseConfig({ safety: { autoApply: { enabled: true } } });
     expect(config.safety.autoApply.enabled).toBe(true);
     expect(config.safety.autoApply.maxRiskLevel).toBe('MEDIUM');
+    expect(config.safety.autoApply.requireIndependentReview).toBe(false);
     expect(config.safety.workspaceIsolation.enabled).toBe(true);
     expect(config.safety.protectedPaths).toContain('.env');
   });

@@ -255,6 +255,8 @@ export class Orchestrator {
 
       const evidence: CompletionEvidence = {
         autoApplyEnabled: this.deps.config.safety.autoApply.enabled,
+        requireIndependentReview: this.deps.config.safety.autoApply.requireIndependentReview,
+        independentReview: outcome.review?.independentReview ?? false,
         validationPassed: outcome.validation?.passed ?? false,
         reviewBlocking: outcome.review ? hasBlockingFindings(outcome.review) : false,
         riskLevel: risk.level,

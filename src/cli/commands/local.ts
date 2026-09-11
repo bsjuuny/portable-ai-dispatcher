@@ -1,10 +1,12 @@
 import type { AppContext } from '../bootstrap.js';
 import type { LocalRuntimeAdapter, LocalRuntimeKind } from '../../models/local.js';
-import { resolve } from 'node:path';
+import { createServer } from 'node:net';
+import { delimiter, dirname, resolve } from 'node:path';
 import { detectHardwareProfile, hardwareFingerprint } from '../../local/hardware.js';
 import { importModelPack } from '../../local/model-packs.js';
 import { qualifyLocalModel } from '../../local/qualification.js';
-import { portableAssetRoot } from '../../local/preflight.js';
+import { portableAssetRoot, runOfflinePreflight } from '../../local/preflight.js';
+import { startManagedProcess } from '../../process/process-runner.js';
 import {
   OllamaRuntimeAdapter,
   LlamaCppRuntimeAdapter,
@@ -16,6 +18,135 @@ export const ADAPTERS: Record<LocalRuntimeKind, LocalRuntimeAdapter> = {
   llamacpp: new LlamaCppRuntimeAdapter(),
   'openai-compatible': new OpenAICompatibleRuntimeAdapter(),
 };
+
+/** Starts the exact runtime/model/context selected by preflight. Keeping process
+ * construction here prevents shell launchers from drifting away from manifests. */
+export async function runLocalStartCommand(ctx: AppContext): Promise<number> {
+  const report = runOfflinePreflight(ctx.cwd, ctx.config);
+  const plan = report.launchPlan;
+  if (!report.overall.ready || !plan) {
+    process.stderr.write(`Local model cannot start: ${report.overall.reasons.join('; ') || 'preflight produced no launch plan.'}\n`);
+    return 1;
+  }
+
+  if (!(await canBind(plan.host, plan.port))) {
+    const message = `Refusing to start because ${plan.host}:${plan.port} is already in use. Stop the existing service or configure another loopback port.`;
+    process.stderr.write(`${message}\n`);
+    return 1;
+  }
+
+  process.stdout.write(`Starting ${plan.modelId} with ${plan.runtimeId} at http://${plan.host}:${plan.port} (context=${plan.contextTokens}, threads=${plan.cpuThreads}, gpu-layers=${plan.gpuLayers})...\n`);
+
+  const libraryDirectory = resolve(dirname(plan.runtimePath), '..', 'lib');
+  const child = startManagedProcess({
+    file: plan.runtimePath,
+    args: [
+      '-m', plan.modelPath,
+      '--alias', plan.modelId,
+      '-c', String(plan.contextTokens),
+      '-t', String(plan.cpuThreads),
+      '-ngl', String(plan.gpuLayers),
+      '-ctk', 'q8_0',
+      '-ctv', 'q8_0',
+      '--host', plan.host,
+      '--port', String(plan.port),
+    ],
+    cwd: portableAssetRoot(ctx.cwd),
+    env: {
+      ...process.env,
+      DYLD_LIBRARY_PATH: [libraryDirectory, process.env['DYLD_LIBRARY_PATH']].filter(Boolean).join(delimiter),
+      PATH: [dirname(plan.runtimePath), process.env['PATH']].filter(Boolean).join(delimiter),
+    },
+  });
+  let receivedSignal: NodeJS.Signals | undefined;
+  const stopForSignal = (signal: NodeJS.Signals): void => {
+    if (receivedSignal) return;
+    receivedSignal = signal;
+    void child.stop().catch(() => undefined);
+  };
+  const onSigint = () => stopForSignal('SIGINT');
+  const onSigterm = () => stopForSignal('SIGTERM');
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
+  try {
+    const configuredTimeout = Number(process.env['AI_DISPATCHER_MODEL_START_TIMEOUT_MS'] ?? 180_000);
+    const timeoutMs = Number.isSafeInteger(configuredTimeout) && configuredTimeout >= 10_000
+      ? Math.min(configuredTimeout, 1_800_000)
+      : 180_000;
+    await waitForLlamaReady(`http://${plan.host}:${plan.port}`, plan.modelId, timeoutMs, () => child.hasExited());
+  } catch (cause) {
+    await child.stop();
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+    if (receivedSignal) return receivedSignal === 'SIGINT' ? 130 : 143;
+    const message = `Local model qualification failed: ${(cause as Error).message}`;
+    process.stderr.write(`${message}\n`);
+    return 1;
+  }
+
+  process.stdout.write(`READY: ${plan.modelId} passed health, model identity, and deterministic generation checks.\n`);
+  try {
+    const result = await child.completion;
+    return receivedSignal ? (receivedSignal === 'SIGINT' ? 130 : 143) : result.exitCode ?? 1;
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+  }
+}
+
+async function waitForLlamaReady(host: string, modelId: string, timeoutMs: number, hasExited: () => boolean): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = 'server has not responded yet';
+  let generationFailures = 0;
+  while (Date.now() < deadline) {
+    let attemptedGeneration = false;
+    if (hasExited()) throw new Error(`llama-server exited before becoming ready (${lastError}).`);
+    try {
+      const status = await ADAPTERS.llamacpp.detect(host, { timeoutMs: 2_000 });
+      if (status.reachable) {
+        const models = await ADAPTERS.llamacpp.listModels(host, { timeoutMs: 2_000 });
+        const expected = normalizeModelName(modelId);
+        if (!models.some((model) => normalizeModelName(model.name) === expected)) {
+          lastError = `expected model '${modelId}' is not present in /v1/models`;
+        } else {
+          attemptedGeneration = true;
+          const result = await ADAPTERS.llamacpp.generate({
+            profileId: 'local-startup-qualification',
+            runtime: 'llamacpp',
+            host,
+            model: modelId,
+            prompt: 'Reply with OK.',
+            timeoutMs: Math.min(30_000, Math.max(2_000, deadline - Date.now())),
+            maxOutputTokens: 16,
+          });
+          if (!result.text.trim()) throw new Error('deterministic generation returned an empty response');
+          return;
+        }
+      } else {
+        lastError = status.message ?? 'health endpoint is not ready';
+      }
+    } catch (cause) {
+      lastError = (cause as Error).message;
+      if (attemptedGeneration) generationFailures += 1;
+    }
+    if (generationFailures >= 3) throw new Error(`model loaded but startup generation failed 3 times (${lastError}).`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
+  }
+  throw new Error(`timed out after ${timeoutMs} ms (${lastError}).`);
+}
+
+function normalizeModelName(value: string): string {
+  return value.trim().toLowerCase().replace(/:latest$/, '');
+}
+
+function canBind(host: string, port: number): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const server = createServer();
+    server.unref();
+    server.once('error', () => resolvePromise(false));
+    server.listen({ host, port, exclusive: true }, () => server.close(() => resolvePromise(true)));
+  });
+}
 
 /** Runtime detection independent of whether any `local.profiles[]` entry
  * references it - lets an operator check `ollama`/`llama.cpp` reachability

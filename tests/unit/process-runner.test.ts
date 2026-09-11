@@ -1,7 +1,40 @@
 import { describe, expect, it } from 'vitest';
-import { runProcess, assertArgvIsStringArray } from '../../src/process/process-runner.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runProcess, startManagedProcess, assertArgvIsStringArray } from '../../src/process/process-runner.js';
 
 describe('runProcess', () => {
+  it('runs a managed long-lived process through the same spawn chokepoint', async () => {
+    const processHandle = startManagedProcess({
+      file: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      cwd: process.cwd(),
+    });
+
+    await expect(processHandle.completion).resolves.toMatchObject({ exitCode: 0, timedOut: false });
+    expect(processHandle.hasExited()).toBe(true);
+  });
+  it('observes a managed spawn failure and lets stop remain idempotent after exit', async () => {
+    const processHandle = startManagedProcess({
+      file: process.execPath,
+      args: [],
+      cwd: join(tmpdir(), 'definitely-missing-ai-dispatcher-cwd'),
+    });
+
+    await expect(processHandle.completion).rejects.toMatchObject({ code: 'PROCESS_START_FAILED' });
+    await expect(processHandle.stop()).resolves.toBeUndefined();
+    expect(processHandle.hasExited()).toBe(true);
+  });
+  it('stops a running managed process and consumes its completion', async () => {
+    const processHandle = startManagedProcess({
+      file: process.execPath,
+      args: ['-e', 'setTimeout(() => {}, 30_000)'],
+      cwd: process.cwd(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await expect(processHandle.stop()).resolves.toBeUndefined();
+    expect(processHandle.hasExited()).toBe(true);
+  });
   it('runs a real trivial process and captures stdout/exit code', async () => {
     const outcome = await runProcess({
       file: process.execPath,

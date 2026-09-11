@@ -4,6 +4,8 @@ import { decideAutoApply, type CompletionEvidence } from '../../src/safety/auto-
 function evidence(overrides: Partial<CompletionEvidence> = {}): CompletionEvidence {
   return {
     autoApplyEnabled: true,
+    requireIndependentReview: false,
+    independentReview: false,
     validationPassed: true,
     reviewBlocking: false,
     riskLevel: 'LOW',
@@ -33,6 +35,16 @@ describe('decideAutoApply', () => {
   it('returns BLOCKED_BY_POLICY when autoApply is disabled, even if everything else passed', () => {
     const result = decideAutoApply(evidence({ autoApplyEnabled: false }));
     expect(result.decision).toBe('BLOCKED_BY_POLICY');
+  });
+
+  it('blocks auto-apply when policy requires an independent review but only self-review ran', () => {
+    const result = decideAutoApply(evidence({ requireIndependentReview: true, independentReview: false }));
+    expect(result.decision).toBe('BLOCKED_BY_POLICY');
+    expect(result.reasons).toContain('independent review is required for auto-apply, but only self-review was available');
+  });
+
+  it('allows auto-apply when the required independent review ran', () => {
+    expect(decideAutoApply(evidence({ requireIndependentReview: true, independentReview: true })).decision).toBe('AUTO_APPLY');
   });
 
   it('returns BLOCKED_BY_POLICY when risk exceeds the configured maximum', () => {

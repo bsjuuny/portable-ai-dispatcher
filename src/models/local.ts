@@ -3,7 +3,7 @@ import type { LocalProviderId } from './provider.js';
 export type LocalRuntimeKind = 'ollama' | 'llamacpp' | 'openai-compatible';
 
 export type HardwareTier = 'CPU_LITE' | 'CPU_STANDARD' | 'CPU_PLUS' | 'GPU_STANDARD' | 'AI_WORKSTATION';
-export type AccelerationBackend = 'cpu' | 'vulkan' | 'cuda' | 'npu';
+export type AccelerationBackend = 'cpu' | 'vulkan' | 'cuda' | 'metal' | 'npu';
 export type ModelUsability =
   | 'READY_FAST'
   | 'READY'

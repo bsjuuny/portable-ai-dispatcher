@@ -91,10 +91,12 @@ ai-dispatcher explain <taskId>         # why a provider was selected, with score
 ai-dispatcher local status [--json]    # runtime reachability + configured local.profiles[] health
 ai-dispatcher local runtimes [--json]  # local runtime reachability, independent of any profile
 ai-dispatcher local models [--json]    # real installed model inventory per reachable runtime
+ai-dispatcher local start              # start the manifest-selected llama.cpp runtime and model
 ai-dispatcher preflight [--json]       # CPU/GPU profile + offline runtime/model-pack readiness
 ai-dispatcher local benchmark [name]   # qualify a configured local model and cache throughput
 ai-dispatcher local import-pack <dir>  # verify and copy a pre-downloaded model pack
 ai-dispatcher portable assemble <dir>  # create a USB-portable offline kit
+ai-dispatcher portable seal <dir>      # regenerate the reviewed kit integrity lock after asset changes
 ```
 
 While a dispatch command (`ask`/`analyze`/`review`/`fix`/`implement`) is running, live status - provider selection, each execution attempt starting/finishing, retries, fallback, validation, review - is streamed to **stderr** as it happens (never stdout, so `--json`'s machine-readable output is untouched). A long-running single execution also gets a periodic "still waiting on `<provider>` (`Ns` elapsed)" heartbeat every 30s. This exists because the CLI used to print nothing at all until the entire task finished, which for a multi-minute run left no way to tell "still working" from "hung" - found live (2026-08-22) during an 11-minute stall with zero terminal output the whole time. A final human-readable (or `--json`) summary still prints at the end regardless.
@@ -200,7 +202,7 @@ local:
 
 ### CPU-first offline model packs
 
-CPU is the baseline, not a fallback after GPU detection. `ai-dispatcher preflight` builds a best-effort hardware profile, assigns `CPU_LITE`, `CPU_STANDARD`, `CPU_PLUS`, `GPU_STANDARD`, or `AI_WORKSTATION`, and selects runtime artifacts in CUDA → Vulkan → CPU order. An ISA-specific binary is selected only when its ISA is positively detected; otherwise only a generic CPU binary is safe. This avoids illegal-instruction failures on unknown machines.
+CPU is the baseline, not a fallback after GPU detection. `ai-dispatcher preflight` builds a best-effort hardware profile, assigns `CPU_LITE`, `CPU_STANDARD`, `CPU_PLUS`, `GPU_STANDARD`, or `AI_WORKSTATION`, and selects runtime artifacts in Metal → CUDA → Vulkan → CPU order. Apple Silicon is detected as integrated Metal hardware with unified memory. An ISA-specific binary is selected only when its ISA is positively detected; otherwise only a generic CPU binary is safe. This avoids illegal-instruction failures on unknown machines.
 
 ```text
 runtime/
@@ -226,9 +228,9 @@ GPU/NPU discovery is optional. An audited installer can supply GPU hints through
 
 ### USB-portable kit
 
-After building, run `ai-dispatcher portable assemble <folder>`. Copy that single generated folder to the USB drive. It contains the current Node.js 22+ executable, built app with JavaScript dependencies bundled into `dist`, portable configuration, launch scripts, and any `runtime/` and `models/` directories already present in the source checkout. It never downloads assets.
+After building, run `ai-dispatcher portable assemble <folder>`. The default target follows a supported host, or can be selected explicitly with `--target windows-x64` or `--target macos-arm64`. Copy that single generated folder to the external drive. It contains the built app with JavaScript dependencies bundled into `dist`, portable configuration, target-specific launch scripts, and reviewed offline assets already present in the source checkout. It never downloads assets and never copies a host executable into a different target.
 
-Before the USB kit can run, confirm the copied Node.js 22+ `runtime/node/node.exe`, then add a reviewed generic CPU runtime plus `runtime-manifest.json` under `runtime/` and verified model packs under `models/`. Then use `bin/preflight.cmd`; it must report `READY`. The launcher keeps the USB bundle as the asset root even when called from another project folder, while that project remains the workspace and owner of `.dispatcher/` history.
+The Windows target uses `runtime/node/node.exe`, MinGit, `.cmd` launchers, and a reviewed Windows llama.cpp runtime. The Apple Silicon target uses `runtime/node/bin/node`, relocatable Git, POSIX launchers, and a macOS arm64 Metal llama.cpp distribution. Prepare Mac assets under `runtime/macos-arm64/` and Mac-native templates under `templates/macos-arm64/` before assembly. If assets are filled or changed after assembly, run `bin/ai-dispatcher portable seal .` from the kit root before `bin/preflight`; the latter must report `READY`. `start-local` consumes that same preflight launch plan instead of maintaining separate model thresholds. See [the macOS portable guide](docs/PORTABLE-KIT-GUIDE.macos.ko.md). The launcher keeps the external bundle as the asset root while the target project remains the workspace and owner of `.dispatcher/` history.
 
 ### Closed-network deployment
 
@@ -290,7 +292,7 @@ By default (`safety.workspaceIsolation.enabled: true`), a code-changing task (`f
 2. Creates a real **`git worktree`** checked out at the current `HEAD` (the "base revision") and runs the *entire* existing dispatch → validate → fix-loop → review pipeline against that isolated copy, completely unmodified — your real working tree is never `reset`, `checkout`ed, or `clean`ed by any of this.
 3. Once validation passes and review is non-blocking, computes the **risk level** of the change (`safety/risk-classifier.ts`): any touch to a `safety.protectedPaths` entry or a CI/CD pipeline file (`.github/workflows/**`, `.gitlab-ci.yml`, `azure-pipelines.yml`, `Jenkinsfile`) is `CRITICAL` regardless of size; otherwise it's `LOW`/`MEDIUM`/`HIGH` based on how far the file/line counts are over `safety.blastRadius`'s per-task-type limits.
 4. Re-checks, immediately before touching anything real, that the base revision hasn't moved (`BASE_REVISION_CHANGED`) and that no file the patch touches was edited in your real working tree without a commit in the meantime (`STALE_PATCH` — a TOCTOU guard `git rev-parse HEAD` alone can't catch, since an uncommitted edit doesn't move `HEAD`).
-5. Decides **`AUTO_APPLY` / `BLOCKED_BY_POLICY` / `FAILED`** (`safety/auto-apply-gate.ts`) — fail-closed: every one of validation-passed, review-non-blocking, lock-held, base-revision-matches, content-hashes-match, `autoApply.enabled`, and risk-within-`maxRiskLevel` must hold, or the change is discarded, never applied by default or by guesswork.
+5. Decides **`AUTO_APPLY` / `BLOCKED_BY_POLICY` / `FAILED`** (`safety/auto-apply-gate.ts`) — fail-closed: every one of validation-passed, review-non-blocking, lock-held, base-revision-matches, content-hashes-match, `autoApply.enabled`, optional independent-review policy, and risk-within-`maxRiskLevel` must hold, or the change is discarded, never applied by default or by guesswork.
 6. On `AUTO_APPLY`, merges the worktree's changes into your real working tree as an ordinary **uncommitted** diff via `git apply` (`safety/patch-apply.ts`) — it never commits on your behalf. On anything else, the worktree (and whatever the AI changed inside it) is simply discarded.
 
 ```yaml
@@ -304,10 +306,13 @@ safety:
     refactor:       { maxFiles: 50, maxChangedLines: 2000 }
   autoApply:
     enabled: false          # ships OFF - see the callout below
+    requireIndependentReview: false # set true to prevent self-reviewed changes from landing
     maxRiskLevel: MEDIUM    # CRITICAL is never auto-appliable, no override exists
 ```
 
 **Read this before you rely on it**: `safety.autoApply.enabled` defaults to **`false`**. That means, out of the box, a `fix`/`implement` task that fully succeeds — validation passes, review approves — now reports **`BLOCKED_BY_POLICY`** instead of `SUCCESS`, and *nothing lands in your repository*, a real behavior change from a config that previously had no `safety.autoApply` key at all to react to. This is intentional: the whole point of this capability is safe-by-default autonomous operation, and a system that silently starts auto-committing AI changes the moment you upgrade would be the opposite of that. Set `safety.autoApply.enabled: true` once you've reviewed the risk/blast-radius thresholds above and decided they match your threat model; `ai-dispatcher fix "..." --dry-run` and a first few `BLOCKED_BY_POLICY` runs (check `ai-dispatcher explain <taskId>` / `ai-dispatcher inspect <taskId>`) are the way to see exactly what *would* have been applied before turning it on for real.
+
+Set `requireIndependentReview: true` when auto-apply must never rely on the implementing model reviewing its own work. A single ready provider may still complete a self-review for diagnostics, but the gate records `independentReview: false`, returns `BLOCKED_BY_POLICY`, and leaves the real working tree unchanged. Portable kits enable this stricter policy by default; configure a genuinely separate ready reviewer before expecting unattended apply.
 
 `workspaceIsolation.enabled: false` is the literal opt-out back to the direct-execution behavior every `fix`/`implement` task had before this capability existed: no worktree, no repository lock, no risk gate — the change lands the moment the provider finishes, exactly as before.
 
@@ -383,6 +388,7 @@ safety:
     refactor: { maxFiles: 50, maxChangedLines: 2000 }
   autoApply:
     enabled: false
+    requireIndependentReview: false
     maxRiskLevel: MEDIUM
 local:
   runtimes:

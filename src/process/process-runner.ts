@@ -43,6 +43,71 @@ export interface ProcessOutcome {
   durationMs: number;
 }
 
+export interface ManagedProcess {
+  readonly pid?: number;
+  readonly completion: Promise<ProcessOutcome>;
+  hasExited(): boolean;
+  stop(): Promise<void>;
+}
+
+/** Starts a deliberately long-running, argv-only process while preserving the
+ * repository's single process-spawn chokepoint. Used for local model servers. */
+export function startManagedProcess(plan: Pick<ProcessPlan, 'file' | 'args' | 'cwd' | 'env'>): ManagedProcess {
+  assertArgvIsStringArray(plan.args);
+  const startedAt = Date.now();
+  const subprocess = execa(plan.file, plan.args, {
+    cwd: plan.cwd,
+    env: plan.env,
+    shell: false,
+    reject: false,
+    stdio: 'inherit',
+    killDescendants: true,
+  });
+  let exited = false;
+  const completion = subprocess.then((result): ProcessOutcome => {
+    if (result.failed && result.exitCode === undefined) {
+      throw new DispatcherError({
+        code: 'PROCESS_START_FAILED',
+        message: `Failed to start process "${plan.file}": ${result.shortMessage}`,
+        retryable: true,
+        severity: 'error',
+      });
+    }
+    return {
+      exitCode: result.exitCode ?? null,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      durationMs: Date.now() - startedAt,
+    };
+  }).catch((cause: unknown) => {
+    if (cause instanceof DispatcherError) throw cause;
+    throw new DispatcherError({
+      code: 'PROCESS_START_FAILED',
+      message: `Failed to start process "${plan.file}": ${(cause as Error).message}`,
+      cause,
+      retryable: true,
+      severity: 'error',
+    });
+  }).finally(() => {
+    exited = true;
+  });
+  // Mark the rejection as observed immediately. Callers still receive the
+  // original rejecting `completion`, but a fast spawn failure cannot become an
+  // unhandled rejection while a readiness loop is still polling.
+  void completion.catch(() => undefined);
+
+  return {
+    pid: subprocess.pid,
+    completion,
+    hasExited: () => exited,
+    stop: async () => {
+      if (!exited) await terminateProcessTree(subprocess.pid, () => subprocess.kill('SIGTERM'));
+      await completion.catch(() => undefined);
+    },
+  };
+}
+
 export async function runProcess(plan: ProcessPlan): Promise<ProcessOutcome> {
   assertArgvIsStringArray(plan.args);
   const startedAt = Date.now();

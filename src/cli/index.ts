@@ -6,9 +6,9 @@ import { runDoctorCommand } from './commands/doctor.js';
 import { runUsageCommand, runProvidersCommand } from './commands/usage.js';
 import { runHistoryCommand, runInspectCommand } from './commands/history.js';
 import { runExplainCommand } from './commands/explain.js';
-import { runLocalStatusCommand, runLocalRuntimesCommand, runLocalModelsCommand, runLocalBenchmarkCommand, runLocalImportPackCommand } from './commands/local.js';
+import { runLocalStatusCommand, runLocalRuntimesCommand, runLocalModelsCommand, runLocalBenchmarkCommand, runLocalImportPackCommand, runLocalStartCommand } from './commands/local.js';
 import { runPreflightCommand } from './commands/preflight.js';
-import { runPortableAssembleCommand, runPortableAddNodeCommand } from './commands/portable.js';
+import { runPortableAssembleCommand, runPortableAddNodeCommand, runPortableSealCommand } from './commands/portable.js';
 import { isDispatcherError } from '../models/error.js';
 import { resolve } from 'node:path';
 import { assertWorkingDirectoryExists } from './validate-working-directory.js';
@@ -118,6 +118,14 @@ program
 const local = program.command('local').description('Local LLM runtime status and inventory.');
 
 local
+  .command('start')
+  .description('Start the exact local llama.cpp runtime/model selected by offline preflight.')
+  .action(async () => {
+    const ctx = createAppContext(process.cwd());
+    process.exitCode = await runLocalStartCommand(ctx);
+  });
+
+local
   .command('status')
   .description('Runtime reachability + configured local.profiles[] provider health.')
   .option('--json', 'Output JSON')
@@ -167,19 +175,28 @@ const portable = program.command('portable').description('Create and operate an 
 portable
   .command('assemble <destination>')
   .description('Create a self-contained kit. Existing runtime/ and models/ folders are copied by default; nothing is downloaded.')
+  .option('--target <target>', 'Portable target: windows-x64 or macos-arm64 (defaults to the current supported host)')
   .option('--without-assets', 'Create the kit structure without copying runtime/ or models/')
   .option('--json', 'Output JSON')
   .action((destination: string, options) => {
     const ctx = createAppContext(process.cwd());
-    process.exitCode = runPortableAssembleCommand(ctx, destination, !options.withoutAssets, Boolean(options.json));
+    process.exitCode = runPortableAssembleCommand(ctx, destination, !options.withoutAssets, Boolean(options.json), options.target as string | undefined);
   });
 
 portable
   .command('add-node <destination>')
-  .description('Copy the current Node.js 22+ executable into an already-created portable kit.')
+  .description('Copy the current Node.js 22+ executable into a Windows portable kit; Mac kits require a complete arm64 Node distribution.')
   .option('--json', 'Output JSON')
   .action((destination: string, options) => {
     process.exitCode = runPortableAddNodeCommand(resolve(process.cwd(), destination), Boolean(options.json));
+  });
+
+portable
+  .command('seal <destination>')
+  .description('Review then regenerate kit-lock.json after adding or replacing offline assets.')
+  .option('--json', 'Output JSON')
+  .action((destination: string, options) => {
+    process.exitCode = runPortableSealCommand(resolve(process.cwd(), destination), Boolean(options.json));
   });
 
 function reportError(error: unknown): void {

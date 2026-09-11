@@ -48,7 +48,10 @@ function healthyLoopbackFetch() {
   return vi.fn(async (input: string | URL | Request) => {
     const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
     expect(['127.0.0.1', 'localhost', '[::1]']).toContain(url.hostname);
-    return new Response(JSON.stringify({ version: 'airgap-test' }), {
+    const body = url.pathname === '/api/tags'
+      ? { models: [{ name: 'local-model' }] }
+      : { version: 'airgap-test' };
+    return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
@@ -74,7 +77,7 @@ describe('closed environment deployment', () => {
     });
 
     expect(routing.selected).toBe('local-airgap');
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('fails closed when the only local runtime is unreachable instead of trying a cloud fallback', async () => {

@@ -502,6 +502,36 @@ describe('Orchestrator - code-changing commands: validation + review (real temp 
     expect(outcome.review?.reviewer).toBe('codex');
   });
 
+  it('withholds auto-apply when policy requires an independent review and only self-review is available', async () => {
+    let resultIndex = 0;
+    const codex = new FileWritingFakeProvider('codex', ['implementation', 'review'], () => {
+      resultIndex += 1;
+      return resultIndex === 1
+        ? successResult('codex')
+        : {
+          taskId: 't', executionId: 'review', provider: 'codex', status: 'success', durationMs: 10,
+          text: '```json\n{"verdict":"approve","findings":[]}\n```',
+        };
+    }, 'self-reviewed.txt', 'must stay isolated');
+    const registry = new ProviderRegistry();
+    registry.register(codex);
+
+    const orchestrator = new Orchestrator({
+      providers: registry,
+      usageStore: new InMemoryUsageStore(),
+      auditLogger: new AuditLogger(new InMemoryAuditSink()),
+      config: parseConfig({
+        validation: { commands: { test: [process.execPath, '-e', 'process.exit(0)'] } },
+        safety: { autoApply: { enabled: true, requireIndependentReview: true } },
+      }),
+    });
+
+    const outcome = await orchestrator.runTask(buildTask({ command: 'implement', workingDirectory: repo }));
+    expect(outcome.review?.independentReview).toBe(false);
+    expect(outcome.verdict).toBe('BLOCKED_BY_POLICY');
+    await expect(access(join(repo, 'self-reviewed.txt'))).rejects.toThrow();
+  });
+
   it('reaches FAILED_REVIEW when the reviewer keeps requesting changes past maxReviewCycles', async () => {
     const codex = new FakeProvider('codex', ['implementation'], () => successResult('codex'));
     const claude = new FakeProvider('claude', ['review'], () => ({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHardwareProfile, deriveHardwareTier, effectiveCpuThreads } from '../../src/local/hardware.js';
+import { buildHardwareProfile, deriveHardwareTier, detectHardwareProfile, effectiveCpuThreads } from '../../src/local/hardware.js';
 
 const GB = 1024 ** 3;
 
@@ -37,5 +37,14 @@ describe('hardware tiers', () => {
   it('reserves IDE/build capacity from a CPU inference thread budget', () => {
     expect(effectiveCpuThreads(profile(16), { maxThreads: 'auto', reserveCores: 2 })).toBe(14);
     expect(effectiveCpuThreads(profile(16), { maxThreads: 4, reserveCores: 8 })).toBe(1);
+  });
+
+  it.skipIf(process.platform !== 'darwin' || process.arch !== 'arm64')('detects Apple Silicon unified memory as a Metal backend', () => {
+    expect(detectHardwareProfile()).toMatchObject({
+      os: 'darwin',
+      arch: 'arm64',
+      integratedGpu: true,
+      gpu: { vendor: 'Apple', backends: ['metal'] },
+    });
   });
 });

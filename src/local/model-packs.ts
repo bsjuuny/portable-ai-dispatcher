@@ -12,6 +12,12 @@ import type {
 } from '../models/local.js';
 
 const HardwareTierSchema = z.enum(['CPU_LITE', 'CPU_STANDARD', 'CPU_PLUS', 'GPU_STANDARD', 'AI_WORKSTATION']);
+const PortableRelativePathSchema = z.string().min(1).refine((value) => {
+  const normalized = value.replace(/\\/g, '/');
+  return !normalized.startsWith('/')
+    && !/^[a-z]:/i.test(normalized)
+    && !normalized.split('/').includes('..');
+}, 'Path must stay relative to its model pack or runtime directory.');
 const ModelPackManifestSchema = z.object({
   schemaVersion: z.literal('1'),
   packId: z.string().min(1),
@@ -20,7 +26,7 @@ const ModelPackManifestSchema = z.object({
   guaranteedBaseline: z.boolean().optional(),
   models: z.array(z.object({
     id: z.string().min(1),
-    file: z.string().min(1),
+    file: PortableRelativePathSchema,
     roles: z.array(z.string().min(1)).min(1),
     minimumRamGB: z.number().positive(),
     recommendedRamGB: z.number().positive(),
@@ -30,7 +36,7 @@ const ModelPackManifestSchema = z.object({
     maxContextTokens: z.number().int().positive().optional(),
     recommendedContext: z.record(HardwareTierSchema, z.number().int().positive()).optional(),
     license: z.string().min(1).optional(),
-    licenseFile: z.string().min(1).optional(),
+    licenseFile: PortableRelativePathSchema.optional(),
     source: z.string().min(1).optional(),
     commercialUseMetadata: z.string().min(1).optional(),
     redistributionMetadata: z.string().min(1).optional(),
@@ -40,10 +46,10 @@ const ModelPackManifestSchema = z.object({
 const RuntimeArtifactManifestSchema = z.object({
   schemaVersion: z.literal('1'),
   runtimeId: z.string().min(1),
-  acceleration: z.enum(['cpu', 'vulkan', 'cuda', 'npu']),
+  acceleration: z.enum(['cpu', 'vulkan', 'cuda', 'metal', 'npu']),
   os: z.string().min(1),
   arch: z.string().min(1),
-  executable: z.string().min(1),
+  executable: PortableRelativePathSchema,
   requiredInstructionSets: z.array(z.enum(['AVX512', 'AVX2', 'AVX', 'SSE', 'NEON'])).optional(),
   version: z.string().min(1).optional(),
   sha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
@@ -67,7 +73,7 @@ export interface ModelAssessment {
 
 export interface RuntimeSelection {
   selected?: RuntimeArtifactManifest;
-  fallbackChain: Array<'cuda' | 'vulkan' | 'cpu'>;
+  fallbackChain: Array<'metal' | 'cuda' | 'vulkan' | 'cpu'>;
   reason: string;
   code?: 'CPU_RUNTIME_UNSUPPORTED' | 'CPU_INSTRUCTION_SET_UNSUPPORTED';
 }
@@ -118,7 +124,7 @@ export function selectRuntimeArtifact(
   artifacts: RuntimeArtifactManifest[],
 ): RuntimeSelection {
   const candidates = artifacts.filter((artifact) => artifact.os === profile.os && artifact.arch === profile.arch);
-  const order: Array<'cuda' | 'vulkan' | 'cpu'> = ['cuda', 'vulkan', 'cpu'];
+  const order: Array<'metal' | 'cuda' | 'vulkan' | 'cpu'> = ['metal', 'cuda', 'vulkan', 'cpu'];
   for (const acceleration of order) {
     const matching = candidates.filter((artifact) => artifact.acceleration === acceleration && runtimeCompatible(profile, artifact));
     const selected = matching.sort(compareRuntimeSpecificity)[0];
@@ -259,6 +265,7 @@ export function importModelPack(
 }
 
 function runtimeCompatible(profile: HardwareProfile, artifact: RuntimeArtifactManifest): boolean {
+  if (artifact.acceleration === 'metal' && !profile.gpu?.backends.includes('metal')) return false;
   if (artifact.acceleration === 'cuda' && !profile.gpu?.backends.includes('cuda')) return false;
   if (artifact.acceleration === 'vulkan' && !profile.gpu?.backends.includes('vulkan')) return false;
   const required = artifact.requiredInstructionSets ?? [];

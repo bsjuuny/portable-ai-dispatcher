@@ -50,7 +50,8 @@ export type ProviderHealthReasonCode =
   | 'PROVIDER_NOT_INSTALLED'
   | 'PROVIDER_NOT_AUTHENTICATED'
   | 'PROVIDER_UNREACHABLE'
-  | 'PROVIDER_RATE_LIMITED';
+  | 'PROVIDER_RATE_LIMITED'
+  | 'LOCAL_MODEL_NOT_FOUND';
 
 export interface ProviderHealth {
   provider: ProviderId;

@@ -11,6 +11,8 @@ export type AutoApplyDecision = 'AUTO_APPLY' | 'BLOCKED_BY_POLICY' | 'FAILED';
  */
 export interface CompletionEvidence {
   autoApplyEnabled: boolean;
+  requireIndependentReview: boolean;
+  independentReview: boolean;
   validationPassed: boolean;
   reviewBlocking: boolean;
   riskLevel: RiskLevel;
@@ -51,6 +53,9 @@ export function decideAutoApply(evidence: CompletionEvidence): AutoApplyResult {
   }
   if (!evidence.autoApplyEnabled) {
     return { decision: 'BLOCKED_BY_POLICY', reasons: ['safety.autoApply.enabled is false'] };
+  }
+  if (evidence.requireIndependentReview && !evidence.independentReview) {
+    return { decision: 'BLOCKED_BY_POLICY', reasons: ['independent review is required for auto-apply, but only self-review was available'] };
   }
   if (RISK_ORDER[evidence.riskLevel] > RISK_ORDER[evidence.maxRiskLevel]) {
     return {
